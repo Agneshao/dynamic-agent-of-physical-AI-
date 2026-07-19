@@ -3,6 +3,17 @@
 from .audit import AuditRecord, AuditRecordType
 from .events import Event, EventSeverity
 from .organization import OperatingMode, OrganizationState
+from .proposals import (
+    Proposal,
+    ProposalAction,
+    ProposalAdmissionResult,
+    ProposalParameter,
+    ProposalRejectionCode,
+    ProposalStatus,
+    ResourceAccessMode,
+    ResourceClaim,
+    StoredProposal,
+)
 from .world_state import (
     FrozenMachineState,
     FrozenPersonState,
@@ -40,9 +51,18 @@ __all__ = [
     "OperatingMode",
     "OrganizationState",
     "PersonState",
+    "Proposal",
+    "ProposalAction",
+    "ProposalAdmissionResult",
+    "ProposalParameter",
+    "ProposalRejectionCode",
+    "ProposalStatus",
     "ResourceReservationState",
+    "ResourceAccessMode",
+    "ResourceClaim",
     "RouteState",
     "TaskState",
+    "StoredProposal",
     "WeatherState",
     "WorldSnapshot",
     "WorldState",
