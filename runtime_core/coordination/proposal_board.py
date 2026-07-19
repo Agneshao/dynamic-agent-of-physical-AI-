@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID
 
 from pydantic import JsonValue
 
 from runtime_core.audit.ledger import AuditLedger, AuditLedgerError
-from runtime_core.errors.proposal_errors import ProposalAuditError
+from runtime_core.errors.proposal_errors import (
+    ProposalAuditError,
+    ProposalLifecycleError,
+    ProposalNotFoundError,
+)
 from runtime_core.organization.mode_manager import ModeManager
 from runtime_core.schemas.audit import AuditRecordType
 from runtime_core.schemas.proposals import (
@@ -38,11 +42,14 @@ class ProposalBoard:
         world_state_kernel: WorldStateKernel,
         mode_manager: ModeManager,
         ledger: AuditLedger,
+        *,
+        clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._lock = RLock()
         self._world_state_kernel = world_state_kernel
         self._mode_manager = mode_manager
         self._ledger = ledger
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._entries: dict[UUID, StoredProposal] = {}
         self._rejection_history: list[ProposalAdmissionResult] = []
         self._seen_proposal_ids: set[UUID] = set()
@@ -60,8 +67,8 @@ class ProposalBoard:
         with self._lock:
             current_world_version = self._world_state_kernel.get_world_version()
             organization = self._mode_manager.get_current_organization()
-            timestamp = datetime.now(timezone.utc)
-            rejection_code = self._rejection_code_locked(
+            timestamp = self._now_locked()
+            rejection_code = self._admission_rejection_code_locked(
                 proposal=proposal,
                 current_world_version=current_world_version,
                 current_org_version=organization.org_version,
@@ -94,6 +101,52 @@ class ProposalBoard:
             self._seen_proposal_ids.add(proposal.proposal_id)
             return self._copy_result(result)
 
+    def validate_for_use(self, proposal_id: UUID) -> ProposalAdmissionResult:
+        """Explicitly revalidate one accepted proposal before execution.
+
+        Terminal lifecycle results are idempotent reads. A newly stale result is
+        appended to the ledger before the replacement StoredProposal is
+        published in memory.
+        """
+        with self._lock:
+            stored = self._entries.get(proposal_id)
+            if stored is None:
+                raise ProposalNotFoundError(str(proposal_id))
+            current_world_version = self._world_state_kernel.get_world_version()
+            organization = self._mode_manager.get_current_organization()
+            timestamp = self._now_locked()
+            return self._validate_entry_for_use_locked(
+                stored=stored,
+                current_world_version=current_world_version,
+                current_org_version=organization.org_version,
+                active_roles=organization.active_roles,
+                timestamp=timestamp,
+            )
+
+    def invalidate_stale(self) -> tuple[UUID, ...]:
+        """Explicitly invalidate all currently stale accepted proposals once."""
+        with self._lock:
+            current_world_version = self._world_state_kernel.get_world_version()
+            organization = self._mode_manager.get_current_organization()
+            timestamp = self._now_locked()
+            invalidated_ids: list[UUID] = []
+            for proposal_id, stored in tuple(self._entries.items()):
+                if stored.current_status != ProposalStatus.ACCEPTED:
+                    continue
+                result = self._validate_entry_for_use_locked(
+                    stored=stored,
+                    current_world_version=current_world_version,
+                    current_org_version=organization.org_version,
+                    active_roles=organization.active_roles,
+                    timestamp=timestamp,
+                )
+                if result.status in (
+                    ProposalStatus.INVALIDATED,
+                    ProposalStatus.EXPIRED,
+                ):
+                    invalidated_ids.append(proposal_id)
+            return tuple(invalidated_ids)
+
     def get(self, proposal_id: UUID) -> Optional[StoredProposal]:
         """Return a validated frozen copy without changing lifecycle state."""
         with self._lock:
@@ -123,7 +176,7 @@ class ProposalBoard:
                 if epoch_id is None or result.epoch_id == epoch_id
             )
 
-    def _rejection_code_locked(
+    def _admission_rejection_code_locked(
         self,
         *,
         proposal: Proposal,
@@ -143,6 +196,101 @@ class ProposalBoard:
         if proposal.agent_role not in active_roles:
             return ProposalRejectionCode.INACTIVE_AGENT_ROLE
         return None
+
+    def _validate_entry_for_use_locked(
+        self,
+        *,
+        stored: StoredProposal,
+        current_world_version: int,
+        current_org_version: int,
+        active_roles: tuple[str, ...],
+        timestamp: datetime,
+    ) -> ProposalAdmissionResult:
+        if stored.current_status in (
+            ProposalStatus.REJECTED,
+            ProposalStatus.EXPIRED,
+            ProposalStatus.INVALIDATED,
+        ):
+            return self._copy_result(stored.latest_result)
+        if stored.current_status != ProposalStatus.ACCEPTED:
+            raise ProposalLifecycleError(
+                f"proposal {stored.proposal.proposal_id} is not admitted for use"
+            )
+
+        rejection_code = self._use_rejection_code_locked(
+            proposal=stored.proposal,
+            current_world_version=current_world_version,
+            current_org_version=current_org_version,
+            active_roles=active_roles,
+            timestamp=timestamp,
+        )
+        if rejection_code is None:
+            return self._copy_result(stored.latest_result)
+        return self._invalidate_entry_locked(
+            stored=stored,
+            rejection_code=rejection_code,
+            current_world_version=current_world_version,
+            current_org_version=current_org_version,
+            timestamp=timestamp,
+        )
+
+    @staticmethod
+    def _use_rejection_code_locked(
+        *,
+        proposal: Proposal,
+        current_world_version: int,
+        current_org_version: int,
+        active_roles: tuple[str, ...],
+        timestamp: datetime,
+    ) -> Optional[ProposalRejectionCode]:
+        if proposal.world_version != current_world_version:
+            return ProposalRejectionCode.STALE_WORLD_VERSION
+        if proposal.org_version != current_org_version:
+            return ProposalRejectionCode.STALE_ORGANIZATION_VERSION
+        if proposal.valid_until <= timestamp:
+            return ProposalRejectionCode.EXPIRED_PROPOSAL
+        if proposal.agent_role not in active_roles:
+            return ProposalRejectionCode.INACTIVE_AGENT_ROLE
+        return None
+
+    def _invalidate_entry_locked(
+        self,
+        *,
+        stored: StoredProposal,
+        rejection_code: ProposalRejectionCode,
+        current_world_version: int,
+        current_org_version: int,
+        timestamp: datetime,
+    ) -> ProposalAdmissionResult:
+        new_status = (
+            ProposalStatus.EXPIRED
+            if rejection_code == ProposalRejectionCode.EXPIRED_PROPOSAL
+            else ProposalStatus.INVALIDATED
+        )
+        result = ProposalAdmissionResult(
+            proposal_id=stored.proposal.proposal_id,
+            epoch_id=stored.proposal.epoch_id,
+            accepted=False,
+            status=new_status,
+            rejection_code=rejection_code,
+            message=f"proposal no longer valid for use: {rejection_code.value}",
+            checked_world_version=current_world_version,
+            checked_org_version=current_org_version,
+            timestamp=timestamp,
+        )
+        candidate = StoredProposal.model_validate(
+            {
+                "proposal": stored.proposal.model_dump(mode="python"),
+                "current_status": new_status,
+                "admission_result": result.model_dump(mode="python"),
+            }
+        )
+        self._append_invalidation_audit_locked(
+            stored=stored,
+            result=result,
+        )
+        self._entries[stored.proposal.proposal_id] = candidate
+        return self._copy_result(result)
 
     @staticmethod
     def _build_result(
@@ -203,6 +351,46 @@ class ProposalBoard:
             raise ProposalAuditError(
                 "proposal admission was not published because audit append failed"
             ) from exc
+
+    def _append_invalidation_audit_locked(
+        self,
+        *,
+        stored: StoredProposal,
+        result: ProposalAdmissionResult,
+    ) -> None:
+        proposal = stored.proposal
+        payload: dict[str, JsonValue] = {
+            "proposal_id": str(proposal.proposal_id),
+            "epoch_id": str(proposal.epoch_id),
+            "agent_id": proposal.agent_id,
+            "agent_role": proposal.agent_role,
+            "proposal_world_version": proposal.world_version,
+            "proposal_org_version": proposal.org_version,
+            "current_world_version": result.checked_world_version,
+            "current_org_version": result.checked_org_version,
+            "previous_status": stored.current_status.value,
+            "new_status": result.status.value,
+            "rejection_code": result.rejection_code.value,
+        }
+        try:
+            self._ledger.append(
+                record_type=AuditRecordType.PROPOSAL_INVALIDATED,
+                actor="proposal_board",
+                world_version=result.checked_world_version,
+                org_version=result.checked_org_version,
+                payload=payload,
+                timestamp=result.timestamp,
+            )
+        except (AuditLedgerError, OSError, ValueError) as exc:
+            raise ProposalAuditError(
+                "proposal lifecycle was not changed because audit append failed"
+            ) from exc
+
+    def _now_locked(self) -> datetime:
+        timestamp = self._clock()
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError("ProposalBoard clock must return a timezone-aware datetime")
+        return timestamp.astimezone(timezone.utc)
 
     @staticmethod
     def _copy_proposal(proposal: Proposal) -> Proposal:

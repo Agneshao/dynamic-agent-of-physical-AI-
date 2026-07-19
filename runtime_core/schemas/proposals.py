@@ -174,8 +174,26 @@ class ProposalAdmissionResult(BaseModel):
         if self.accepted:
             if self.status != ProposalStatus.ACCEPTED or self.rejection_code is not None:
                 raise ValueError("accepted results require ACCEPTED status and no rejection")
-        elif self.status != ProposalStatus.REJECTED or self.rejection_code is None:
-            raise ValueError("rejected results require REJECTED status and a rejection code")
+            return self
+        if self.rejection_code is None:
+            raise ValueError("non-accepted results require a rejection code")
+        if self.status not in (
+            ProposalStatus.REJECTED,
+            ProposalStatus.INVALIDATED,
+            ProposalStatus.EXPIRED,
+        ):
+            raise ValueError("non-accepted results require a terminal failure status")
+        if (
+            self.status == ProposalStatus.EXPIRED
+            and self.rejection_code != ProposalRejectionCode.EXPIRED_PROPOSAL
+        ):
+            raise ValueError("EXPIRED status requires EXPIRED_PROPOSAL")
+        if self.status == ProposalStatus.INVALIDATED and self.rejection_code not in (
+            ProposalRejectionCode.STALE_WORLD_VERSION,
+            ProposalRejectionCode.STALE_ORGANIZATION_VERSION,
+            ProposalRejectionCode.INACTIVE_AGENT_ROLE,
+        ):
+            raise ValueError("INVALIDATED status requires a stale-state rejection")
         return self
 
 
@@ -196,6 +214,16 @@ class StoredProposal(BaseModel):
             raise ValueError("proposal and admission result epoch IDs must match")
         if self.current_status != self.admission_result.status:
             raise ValueError("current status must match the admission result")
-        if self.current_status not in (ProposalStatus.ACCEPTED, ProposalStatus.REJECTED):
-            raise ValueError("newly stored proposals must be accepted or rejected")
+        if self.current_status not in (
+            ProposalStatus.ACCEPTED,
+            ProposalStatus.REJECTED,
+            ProposalStatus.INVALIDATED,
+            ProposalStatus.EXPIRED,
+        ):
+            raise ValueError("stored proposals must have a board-managed lifecycle status")
         return self
+
+    @property
+    def latest_result(self) -> ProposalAdmissionResult:
+        """Return the authoritative latest lifecycle result."""
+        return self.admission_result
