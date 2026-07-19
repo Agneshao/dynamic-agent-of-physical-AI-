@@ -147,6 +147,7 @@ class WorldState(RuntimeModel):
     routes: dict[str, RouteState] = Field(default_factory=dict)
     weather: WeatherState = Field(default_factory=lambda: WeatherState(condition="clear"))
     resource_reservations: dict[str, ResourceReservationState] = Field(default_factory=dict)
+    new_tasks_frozen: bool = False
 
     @field_validator("timestamp")
     @classmethod
@@ -281,6 +282,7 @@ class FrozenWorldState(FrozenRuntimeModel):
     routes: tuple[FrozenRouteState, ...]
     weather: FrozenWeatherState
     resource_reservations: tuple[FrozenResourceReservationState, ...]
+    new_tasks_frozen: bool
 
     @field_validator("timestamp")
     @classmethod
@@ -303,6 +305,7 @@ class FrozenWorldState(FrozenRuntimeModel):
                 FrozenResourceReservationState(**item.model_dump())
                 for item in state.resource_reservations.values()
             ),
+            new_tasks_frozen=state.new_tasks_frozen,
         )
 
     def get_zone(self, zone_id: str) -> Optional[FrozenZoneState]:

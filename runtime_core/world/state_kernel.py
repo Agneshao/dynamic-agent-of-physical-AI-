@@ -124,6 +124,15 @@ class WorldStateKernel:
             candidate["weather"] = weather.model_dump(mode="python")
             return self._commit_candidate_locked(candidate)
 
+    def update_new_tasks_frozen(self, frozen: bool) -> WorldState:
+        """Set the authoritative task-admission freeze flag on real change."""
+        with self._lock:
+            if self._state.new_tasks_frozen == frozen:
+                return self._copy_state_locked()
+            candidate = self._state.model_dump(mode="python")
+            candidate["new_tasks_frozen"] = frozen
+            return self._commit_candidate_locked(candidate)
+
     def apply_event(self, event: Event) -> WorldState:
         """Apply one supported event atomically and record its key after commit."""
         with self._lock:
@@ -207,4 +216,3 @@ class WorldStateKernel:
 
     def _copy_state_locked(self) -> WorldState:
         return WorldState.model_validate(self._state.model_dump(mode="python"))
-

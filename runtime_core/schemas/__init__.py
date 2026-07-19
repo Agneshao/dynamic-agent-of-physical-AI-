@@ -1,6 +1,15 @@
 """Public schema models used by the runtime core."""
 
 from .audit import AuditRecord, AuditRecordType
+from .commands import (
+    Command,
+    CommandResult,
+    CommandStatus,
+    CommandType,
+    ExecutionReceipt,
+    VerificationResult,
+)
+from .evidence import Evidence, EvidenceFact, EvidenceKind
 from .events import Event, EventSeverity
 from .organization import OperatingMode, OrganizationState
 from .proposals import (
@@ -37,6 +46,13 @@ from .world_state import (
 __all__ = [
     "AuditRecord",
     "AuditRecordType",
+    "Command",
+    "CommandResult",
+    "CommandStatus",
+    "CommandType",
+    "Evidence",
+    "EvidenceFact",
+    "EvidenceKind",
     "Event",
     "EventSeverity",
     "FrozenMachineState",
@@ -47,6 +63,7 @@ __all__ = [
     "FrozenWeatherState",
     "FrozenWorldState",
     "FrozenZoneState",
+    "ExecutionReceipt",
     "MachineState",
     "OperatingMode",
     "OrganizationState",
@@ -64,6 +81,7 @@ __all__ = [
     "TaskState",
     "StoredProposal",
     "WeatherState",
+    "VerificationResult",
     "WorldSnapshot",
     "WorldState",
     "ZoneState",
