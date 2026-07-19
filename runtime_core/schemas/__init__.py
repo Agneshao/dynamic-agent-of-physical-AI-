@@ -1,6 +1,7 @@
 """Public schema models used by the runtime core."""
 
 from .audit import AuditRecord, AuditRecordType
+from .approval import ApprovalDecision, approve_proposal
 from .commands import (
     Command,
     CommandResult,
@@ -46,6 +47,7 @@ from .world_state import (
 __all__ = [
     "AuditRecord",
     "AuditRecordType",
+    "ApprovalDecision",
     "Command",
     "CommandResult",
     "CommandStatus",
@@ -85,4 +87,5 @@ __all__ = [
     "WorldSnapshot",
     "WorldState",
     "ZoneState",
+    "approve_proposal",
 ]
