@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from runtime_core.demo.thunderstorm_demo import run_thunderstorm_demo
+from runtime_core.trace.exporter import dump_runtime_trace_jsonl
 from runtime_core.ui.projection import build_observability_view
 
 
@@ -19,11 +20,15 @@ class ObservabilityRequestHandler(BaseHTTPRequestHandler):
     """Serve a precomputed, detached scenario projection and static assets."""
 
     scenario_payload: bytes = b"{}"
+    trace_payload: bytes = b""
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         route = self.path.split("?", 1)[0]
         if route == "/api/scenario":
             self._send(self.scenario_payload, "application/json; charset=utf-8")
+            return
+        if route == "/runtime_trace.jsonl":
+            self._send(self.trace_payload, "application/x-ndjson; charset=utf-8")
             return
         assets = {
             "/": ("index.html", "text/html; charset=utf-8"),
@@ -61,6 +66,7 @@ def create_server(
     """Create a server whose payload is isolated from all runtime writer objects."""
     result = run_thunderstorm_demo(audit_path=audit_path)
     view = build_observability_view(result)
+    runtime_trace_payload = dump_runtime_trace_jsonl(result)
     payload = json.dumps(
         view.model_dump(mode="json"),
         separators=(",", ":"),
@@ -68,6 +74,7 @@ def create_server(
 
     class BoundHandler(ObservabilityRequestHandler):
         scenario_payload = payload
+        trace_payload = runtime_trace_payload
 
     return ThreadingHTTPServer((host, port), BoundHandler)
 

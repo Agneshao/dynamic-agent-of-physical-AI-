@@ -7,6 +7,7 @@ from http.client import HTTPConnection
 from threading import Thread
 
 from runtime_core.demo.thunderstorm_demo import run_thunderstorm_demo
+from runtime_core.trace.exporter import build_runtime_trace, dump_runtime_trace_jsonl
 from runtime_core.ui.projection import ObservabilityLayer, ObservabilityView, build_observability_view
 from runtime_core.ui.server import create_server
 
@@ -55,6 +56,22 @@ def test_http_server_exposes_scenario_and_static_assets(tmp_path) -> None:
         assert payload["incident_id"] == "thunderstorm-demo-001"
         assert len(payload["interactions"]) == 7
 
+        connection.request("GET", "/runtime_trace.jsonl")
+        trace_response = connection.getresponse()
+        trace_records = [
+            json.loads(line) for line in trace_response.read().splitlines()
+        ]
+        assert trace_response.status == 200
+        assert trace_response.getheader("Content-Type").startswith(
+            "application/x-ndjson"
+        )
+        assert trace_records[0]["record_type"] == "scenario"
+        assert trace_records[0]["scenario"]["final"]["devices"]["drone_1"]["status"] == "tracking_person"
+        assert any(
+            record.get("event", {}).get("type") == "STALE_PROPOSAL_REJECTED"
+            for record in trace_records
+        )
+
         connection.request("GET", "/")
         page = connection.getresponse()
         body = page.read().decode("utf-8")
@@ -76,3 +93,27 @@ def test_http_server_exposes_scenario_and_static_assets(tmp_path) -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_runtime_trace_is_jsonl_and_carries_actual_runtime_results(tmp_path) -> None:
+    result = run_thunderstorm_demo(audit_path=tmp_path / "trace.jsonl")
+
+    records = build_runtime_trace(result)
+    decoded = [json.loads(line) for line in dump_runtime_trace_jsonl(result).splitlines()]
+
+    assert len(decoded) == len(records)
+    assert [item["record_type"] for item in decoded] == [
+        item["record_type"] for item in records
+    ]
+    assert records[0]["schema_version"] == "1.0"
+    scenario = records[0]["scenario"]
+    assert scenario["initial"]["worldVersion"] == result.initial_world_version
+    assert scenario["final"]["worldVersion"] == result.final_world_version
+    assert scenario["final"]["people"]["player_1"]["status"] == "alerted"
+    assert scenario["proposalRejection"]["code"] == "STALE_ORGANIZATION_VERSION"
+    events = [record["event"] for record in records[1:]]
+    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assert any(
+        event["payload"].get("command_type") == "track_person"
+        for event in events
+    )

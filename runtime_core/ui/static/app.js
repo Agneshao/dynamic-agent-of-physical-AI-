@@ -1,6 +1,7 @@
 "use strict";
 
-const scenario = window.GOLF_RUNTIME_SCENARIO;
+let scenario = window.GOLF_RUNTIME_SCENARIO;
+let traceSource = "MOCK_SCENARIO_V1";
 const runtime = {
   cursor: -1,
   selectedSequence: null,
@@ -14,7 +15,8 @@ const roleLabels = {
   operations: "Operations",
   maintenance: "Maintenance",
   resource: "Resource",
-  communication: "Communication"
+  communication: "Communication",
+  logistics: "Logistics"
 };
 
 const roleInitials = {
@@ -24,7 +26,8 @@ const roleInitials = {
   operations: "OP",
   maintenance: "MT",
   resource: "RS",
-  communication: "CM"
+  communication: "CM",
+  logistics: "LG"
 };
 
 const normalPositions = {
@@ -43,7 +46,8 @@ const emergencyPositions = {
   communication: [76, 55],
   supervisor: [18, 86],
   maintenance: [50, 86],
-  resource: [82, 86]
+  resource: [82, 86],
+  logistics: [91, 55]
 };
 
 const normalMobilePositions = {
@@ -62,13 +66,15 @@ const emergencyMobilePositions = {
   communication: [48, 55],
   supervisor: [62, 86],
   maintenance: [77, 86],
-  resource: [90, 86]
+  resource: [90, 86],
+  logistics: [90, 55]
 };
 
 const $ = (id) => document.getElementById(id);
 
 function init() {
   $("headerIncident").textContent = scenario.id;
+  $("traceSource").textContent = traceSource;
   bindControls();
   renderTimeline();
   render();
@@ -214,7 +220,7 @@ function drawReportingLines() {
 }
 
 function renderChangePanel() {
-  const selectorReached = runtime.cursor >= 4;
+  const selectorReached = hasReached("ORGANIZATION_PLAN");
   const emergency = isEmergency();
   const config = scenario.organization.emergency;
   $("changeTitle").textContent = selectorReached ? "Minimum emergency organization selected" : "Normal operations organization";
@@ -227,8 +233,8 @@ function renderChangePanel() {
   $("suspendedRoles").textContent = selectorReached ? config.suspended.map(labelRole).join(", ") : "None";
 
   const rejection = scenario.proposalRejection;
-  const compared = runtime.cursor >= 6;
-  const rejected = runtime.cursor >= 7;
+  const compared = hasReached("PROPOSAL_SUBMISSION");
+  const rejected = hasReached("STALE_PROPOSAL_REJECTED");
   $("proposalWorld").textContent = rejection.proposalWorldVersion;
   $("proposalOrg").textContent = rejection.proposalOrgVersion;
   $("runtimeWorld").textContent = rejection.runtimeWorldVersion;
@@ -291,7 +297,15 @@ function renderPhysicalState() {
       <div class="battery-track"><i style="width:${current.battery}%"></i></div>
     </article>`;
   }).join("");
-  $("deviceStateGrid").innerHTML = `${deviceCards}
+  const personCards = Object.entries(scenario.initial.people || {}).map(([id, initial]) => {
+    const current = currentState.people[id];
+    return `<article class="device-card person-card">
+      <header><strong>${id}</strong><span>${escapeHtml(initial.role.toUpperCase())}</span></header>
+      <div class="device-delta"><span>${escapeHtml(initial.status)}</span><i>→</i><span class="current">${escapeHtml(current.status)}</span></div>
+      <div class="device-delta"><span>${escapeHtml(initial.zone)}</span><i>→</i><span class="current">${escapeHtml(current.zone)}</span></div>
+    </article>`;
+  }).join("");
+  $("deviceStateGrid").innerHTML = `${deviceCards}${personCards}
     <article class="runtime-state-card"><span>NEW_TASKS_FROZEN</span><strong>${String(currentState.newTasksFrozen).toUpperCase()}</strong></article>
     <article class="runtime-state-card"><span>CURRENT MODE</span><strong>${currentState.mode}</strong></article>
     <article class="runtime-state-card"><span>CURRENT ORG_VERSION</span><strong>v${currentState.orgVersion}</strong></article>`;
@@ -302,7 +316,8 @@ function stateAtCursor() {
     mode: scenario.initial.mode,
     orgVersion: scenario.initial.orgVersion,
     newTasksFrozen: scenario.initial.newTasksFrozen,
-    devices: JSON.parse(JSON.stringify(scenario.initial.devices))
+    devices: JSON.parse(JSON.stringify(scenario.initial.devices)),
+    people: JSON.parse(JSON.stringify(scenario.initial.people || {}))
   };
   scenario.steps.slice(0, runtime.cursor + 1).forEach((step) => {
     state.mode = step.mode;
@@ -310,6 +325,7 @@ function stateAtCursor() {
     if (!step.statePatch) return;
     if (typeof step.statePatch.newTasksFrozen === "boolean") state.newTasksFrozen = step.statePatch.newTasksFrozen;
     Object.entries(step.statePatch.devices || {}).forEach(([id, patch]) => Object.assign(state.devices[id], patch));
+    Object.entries(step.statePatch.people || {}).forEach(([id, patch]) => Object.assign(state.people[id], patch));
   });
   return state;
 }
@@ -340,6 +356,7 @@ function normalizeRole(value) {
 function labelRole(role) { return roleLabels[role] || role; }
 function currentStep() { return runtime.cursor >= 0 ? scenario.steps[runtime.cursor] : null; }
 function isEmergency() { return Boolean(currentStep() && currentStep().mode === "EMERGENCY"); }
+function hasReached(type) { return scenario.steps.slice(0, runtime.cursor + 1).some((step) => step.type === type); }
 
 function payloadRows(payload) {
   return Object.entries(payload).map(([key, value]) => `<div class="payload-row"><code>${escapeHtml(key)}</code><strong>${escapeHtml(formatValue(value))}</strong></div>`).join("");
@@ -362,4 +379,19 @@ function escapeHtml(value) {
   }[character]));
 }
 
-init();
+async function loadRuntimeTrace() {
+  try {
+    const response = await fetch("./runtime_trace.jsonl", { cache: "no-store" });
+    if (!response.ok) throw new Error(`trace request failed: ${response.status}`);
+    const records = (await response.text()).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    const metadata = records.find((record) => record.record_type === "scenario");
+    const events = records.filter((record) => record.record_type === "event").map((record) => record.event);
+    if (!metadata || events.length === 0) throw new Error("trace is incomplete");
+    scenario = { ...metadata.scenario, steps: events };
+    traceSource = `RUNTIME_TRACE_JSONL_V${metadata.schema_version}`;
+  } catch (error) {
+    console.warn("Using bundled scenario fallback", error);
+  }
+}
+
+loadRuntimeTrace().then(init);

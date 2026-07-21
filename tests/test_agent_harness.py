@@ -20,6 +20,7 @@ from runtime_core.agents.harness import (
     StaleAgentOrganizationVersionError,
 )
 from runtime_core.agents.lifecycle import AgentLifecycleStatus
+from runtime_core.agents.model_handler import StructuredModelAgentHandler
 from runtime_core.agents.role_profile import emergency_role_profiles
 from runtime_core.audit.ledger import AuditLedger
 from runtime_core.organization.mode_manager import ModeManager
@@ -158,6 +159,39 @@ def test_active_harness_processes_structured_message(tmp_path) -> None:
     assert result.occupied_zones == ("zone_B",)
     assert result.world_version == snapshot.world_version
     assert result.org_version == organization.org_version
+
+
+def test_harness_can_delegate_to_structured_model_router(tmp_path) -> None:
+    snapshot, _, organization = make_context(tmp_path)
+
+    class FakeRouter:
+        def complete(self, **kwargs):
+            assert kwargs["output_schema"] is SafetyReport
+            assert '"world_version":0' in kwargs["user_prompt"]
+            return SafetyReport(
+                incident_id="storm-1",
+                world_version=snapshot.world_version,
+                org_version=organization.org_version,
+                occupied_zones=("zone_B",),
+                unsafe_machines=("mower_1",),
+                required_holds=("mower_1",),
+                risk_summary="person exposed during thunderstorm",
+                confidence=0.99,
+            )
+
+    handler = StructuredModelAgentHandler(
+        model_router=FakeRouter(),
+        system_prompt="Return only a policy-bounded safety report.",
+        output_schema=SafetyReport,
+    )
+    result = make_harness(organization, handler=handler).handle(
+        message=make_message(snapshot, organization),
+        snapshot=snapshot,
+        organization=organization,
+    )
+
+    assert isinstance(result, SafetyReport)
+    assert result.required_holds == ("mower_1",)
 
 
 def test_suspended_harness_rejects_before_handler(tmp_path) -> None:

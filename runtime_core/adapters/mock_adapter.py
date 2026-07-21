@@ -17,6 +17,7 @@ from runtime_core.schemas.commands import (
 )
 from runtime_core.schemas.evidence import Evidence, EvidenceFact, EvidenceKind
 from runtime_core.schemas.world_state import FrozenMachineState
+from runtime_core.schemas.world_state import FrozenPersonState
 
 
 class MockSimulatorAdapter(SimulatorAdapter):
@@ -58,6 +59,15 @@ class MockSimulatorAdapter(SimulatorAdapter):
                 last_updated_at=timestamp,
             ),
         }
+        self._people: dict[str, FrozenPersonState] = {
+            "player_1": FrozenPersonState(
+                person_id="player_1",
+                role="player",
+                zone="zone_B",
+                status="active",
+                last_updated_at=timestamp,
+            )
+        }
         self._locations: dict[str, dict[str, object]] = {
             "zone_A": {"available": True, "occupied_by_people": ()},
             "zone_B": {"available": True, "occupied_by_people": ("player_1",)},
@@ -88,6 +98,10 @@ class MockSimulatorAdapter(SimulatorAdapter):
                     }
                     for location_id, details in self._locations.items()
                 },
+                "people": {
+                    person_id: person.model_dump(mode="json")
+                    for person_id, person in self._people.items()
+                },
                 "new_tasks_frozen": self._new_tasks_frozen,
                 "notifications": tuple(self._notifications),
             }
@@ -111,7 +125,9 @@ class MockSimulatorAdapter(SimulatorAdapter):
                 return self._copy_receipt(receipt)
 
             try:
-                observed_machine, frozen = self._apply_command_locked(command, timestamp)
+                observed_machine, observed_person, frozen = self._apply_command_locked(
+                    command, timestamp
+                )
             except ValueError as exc:
                 receipt = ExecutionReceipt(
                     command_id=command.command_id,
@@ -132,6 +148,7 @@ class MockSimulatorAdapter(SimulatorAdapter):
                     else "mock adapter executed command"
                 ),
                 observed_machine=observed_machine,
+                observed_person=observed_person,
                 new_tasks_frozen=frozen,
                 executed_at=timestamp,
             )
@@ -152,6 +169,7 @@ class MockSimulatorAdapter(SimulatorAdapter):
                     status=CommandStatus.UNKNOWN,
                     message="adapter acknowledgement unavailable",
                     observed_machine=receipt.observed_machine,
+                    observed_person=receipt.observed_person,
                     new_tasks_frozen=receipt.new_tasks_frozen,
                     verified_at=timestamp,
                 )
@@ -163,12 +181,15 @@ class MockSimulatorAdapter(SimulatorAdapter):
                     verified_at=timestamp,
                 )
             else:
-                observed_machine, frozen = self._observed_effect_locked(command)
+                observed_machine, observed_person, frozen = self._observed_effect_locked(
+                    command
+                )
                 result = VerificationResult(
                     command_id=command.command_id,
                     status=CommandStatus.VERIFIED,
                     message="mock adapter state verified",
                     observed_machine=observed_machine,
+                    observed_person=observed_person,
                     new_tasks_frozen=frozen,
                     verified_at=timestamp,
                 )
@@ -201,28 +222,57 @@ class MockSimulatorAdapter(SimulatorAdapter):
 
     def _apply_command_locked(
         self, command: Command, timestamp: datetime
-    ) -> tuple[Optional[FrozenMachineState], Optional[bool]]:
+    ) -> tuple[
+        Optional[FrozenMachineState],
+        Optional[FrozenPersonState],
+        Optional[bool],
+    ]:
         if command.command_type == CommandType.FREEZE_NEW_TASKS:
             if command.target_id != "runtime":
                 raise ValueError("freeze_new_tasks target must be runtime")
             self._new_tasks_frozen = True
-            return None, True
+            return None, None, True
         if command.command_type == CommandType.NOTIFY_OPERATOR:
             parameter = command.get_parameter("message")
             message = str(parameter.value) if parameter else "operator notification"
             self._notifications.append(message)
-            return None, None
+            return None, None, None
+        if command.command_type == CommandType.ALERT_PERSON:
+            person = self._people.get(command.target_id)
+            if person is None:
+                raise ValueError(f"unknown person: {command.target_id}")
+            updated_person = FrozenPersonState(
+                person_id=person.person_id,
+                role=person.role,
+                zone=person.zone,
+                status="alerted",
+                last_updated_at=(
+                    person.last_updated_at
+                    if person.status == "alerted"
+                    else timestamp
+                ),
+            )
+            self._people[command.target_id] = updated_person
+            return None, updated_person, None
 
         machine = self._machines.get(command.target_id)
         if machine is None:
             raise ValueError(f"unknown machine: {command.target_id}")
         if command.command_type == CommandType.RECALL_DRONE and machine.machine_type != "drone":
             raise ValueError("recall_drone requires a drone target")
+        if command.command_type == CommandType.TRACK_PERSON:
+            if machine.machine_type != "drone":
+                raise ValueError("track_person requires a drone target")
+            person_parameter = command.get_parameter("person_id")
+            if person_parameter is None or not str(person_parameter.value):
+                raise ValueError("track_person requires person_id")
 
         status = machine.status
         zone = machine.zone
         if command.command_type == CommandType.PAUSE_MACHINE:
             status = "paused"
+        elif command.command_type == CommandType.TRACK_PERSON:
+            status = "tracking_person"
         elif command.command_type == CommandType.HOLD_POSITION:
             status = "holding"
         elif command.command_type in (
@@ -247,19 +297,28 @@ class MockSimulatorAdapter(SimulatorAdapter):
             ),
         )
         self._machines[command.target_id] = updated
-        return updated, None
+        return updated, None, None
 
     def _observed_effect_locked(
         self, command: Command
-    ) -> tuple[Optional[FrozenMachineState], Optional[bool]]:
+    ) -> tuple[
+        Optional[FrozenMachineState],
+        Optional[FrozenPersonState],
+        Optional[bool],
+    ]:
         if command.command_type == CommandType.FREEZE_NEW_TASKS:
-            return None, self._new_tasks_frozen
+            return None, None, self._new_tasks_frozen
         if command.command_type == CommandType.NOTIFY_OPERATOR:
-            return None, None
+            return None, None, None
+        if command.command_type == CommandType.ALERT_PERSON:
+            person = self._people.get(command.target_id)
+            if person is None:
+                raise ValueError(f"unknown person: {command.target_id}")
+            return None, person, None
         machine = self._machines.get(command.target_id)
         if machine is None:
             raise ValueError(f"unknown machine: {command.target_id}")
-        return machine, None
+        return machine, None, None
 
     def _record_execution_locked(
         self,

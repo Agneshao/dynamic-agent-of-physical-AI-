@@ -16,7 +16,7 @@ from runtime_core.schemas.commands import (
     VerificationResult,
 )
 from runtime_core.schemas.evidence import Evidence, EvidenceFact, EvidenceKind
-from runtime_core.schemas.world_state import MachineState
+from runtime_core.schemas.world_state import MachineState, PersonState
 from runtime_core.world.state_kernel import WorldStateKernel
 
 
@@ -143,6 +143,12 @@ class SimpleExecutor:
             self._world_state_kernel.update_machine(
                 MachineState.model_validate(
                     verification.observed_machine.model_dump(mode="python")
+                )
+            )
+        elif verification.observed_person is not None:
+            self._world_state_kernel.update_person(
+                PersonState.model_validate(
+                    verification.observed_person.model_dump(mode="python")
                 )
             )
         elif verification.new_tasks_frozen is not None:

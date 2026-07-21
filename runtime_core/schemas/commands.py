@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .evidence import Evidence
 from .proposals import ProposalParameter
-from .world_state import FrozenMachineState, utc_now
+from .world_state import FrozenMachineState, FrozenPersonState, utc_now
 
 
 class CommandType(str, Enum):
@@ -23,6 +23,8 @@ class CommandType(str, Enum):
     RECALL_DRONE = "recall_drone"
     FREEZE_NEW_TASKS = "freeze_new_tasks"
     NOTIFY_OPERATOR = "notify_operator"
+    ALERT_PERSON = "alert_person"
+    TRACK_PERSON = "track_person"
 
 
 class CommandStatus(str, Enum):
@@ -97,6 +99,7 @@ class ExecutionReceipt(BaseModel):
     status: CommandStatus
     message: str = Field(min_length=1)
     observed_machine: Optional[FrozenMachineState] = None
+    observed_person: Optional[FrozenPersonState] = None
     new_tasks_frozen: Optional[bool] = None
     executed_at: datetime = Field(default_factory=utc_now)
 
@@ -126,6 +129,7 @@ class VerificationResult(BaseModel):
     status: CommandStatus
     message: str = Field(min_length=1)
     observed_machine: Optional[FrozenMachineState] = None
+    observed_person: Optional[FrozenPersonState] = None
     new_tasks_frozen: Optional[bool] = None
     verified_at: datetime = Field(default_factory=utc_now)
 

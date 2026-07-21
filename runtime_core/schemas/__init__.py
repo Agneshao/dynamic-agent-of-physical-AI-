@@ -26,6 +26,11 @@ from .commands import (
 from .evidence import Evidence, EvidenceFact, EvidenceKind
 from .events import Event, EventSeverity
 from .organization import OperatingMode, OrganizationState
+from .person_safety import (
+    PersonSafetySignal,
+    PersonSafetySignalType,
+    PersonSafetyUpdateResult,
+)
 from .proposals import (
     Proposal,
     ProposalAction,
@@ -36,6 +41,11 @@ from .proposals import (
     ResourceAccessMode,
     ResourceClaim,
     StoredProposal,
+)
+from .ros2 import (
+    Ros2CommandResponse,
+    Ros2MessageEnvelope,
+    Ros2SensorIngestResult,
 )
 from .world_state import (
     FrozenMachineState,
@@ -91,6 +101,9 @@ __all__ = [
     "OperationsPlan",
     "OrganizationState",
     "PersonState",
+    "PersonSafetySignal",
+    "PersonSafetySignalType",
+    "PersonSafetyUpdateResult",
     "Proposal",
     "ProposalAction",
     "ProposalAdmissionResult",
@@ -101,6 +114,9 @@ __all__ = [
     "ResourceAccessMode",
     "ResourceClaim",
     "RouteState",
+    "Ros2CommandResponse",
+    "Ros2MessageEnvelope",
+    "Ros2SensorIngestResult",
     "TaskState",
     "StoredProposal",
     "SafetyReport",

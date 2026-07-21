@@ -26,6 +26,7 @@ from runtime_core.organization.minimal_org_selector import (
 from runtime_core.organization.mode_manager import ModeManager
 from runtime_core.orchestration.emergency_team import EmergencyTeamOrchestrator
 from runtime_core.policies.emergency_fast_path import EmergencyFastPath
+from runtime_core.policies.human_safety_fast_path import HumanSafetyFastPath
 from runtime_core.schemas.approval import ApprovalDecision, approve_proposal
 from runtime_core.schemas.audit import AuditRecord
 from runtime_core.schemas.commands import Command, CommandResult
@@ -63,6 +64,8 @@ class ThunderstormDemoResult(BaseModel):
     emergency_team_result: Optional[EmergencyTeamResult]
     fast_path_commands: tuple[Command, ...]
     fast_path_results: tuple[CommandResult, ...]
+    human_safety_commands: tuple[Command, ...]
+    human_safety_results: tuple[CommandResult, ...]
     normal_proposal: Proposal
     stale_submission_world_version: int
     stale_proposal_result: ProposalAdmissionResult
@@ -98,6 +101,9 @@ def run_thunderstorm_demo(
     adapter = MockSimulatorAdapter()
     executor = SimpleExecutor(world_kernel, mode_manager, adapter)
     fast_path = EmergencyFastPath(executor, world_kernel, mode_manager)
+    human_safety_fast_path = HumanSafetyFastPath(
+        executor, world_kernel, mode_manager
+    )
 
     initial_world_version = world_kernel.get_world_version()
     initial_organization = mode_manager.get_current_organization()
@@ -122,6 +128,11 @@ def run_thunderstorm_demo(
 
     fast_path_snapshot = snapshot_manager.create_snapshot()
     fast_path_result = fast_path.execute(
+        fast_path_snapshot,
+        incident_id=incident_id,
+        severity=thunderstorm.severity,
+    )
+    human_safety_result = human_safety_fast_path.execute(
         fast_path_snapshot,
         incident_id=incident_id,
         severity=thunderstorm.severity,
@@ -211,6 +222,8 @@ def run_thunderstorm_demo(
         emergency_team_result=emergency_team_result,
         fast_path_commands=fast_path_result.commands,
         fast_path_results=fast_path_result.command_results,
+        human_safety_commands=human_safety_result.commands,
+        human_safety_results=human_safety_result.command_results,
         normal_proposal=normal_proposal,
         stale_submission_world_version=stale_submission_world_version,
         stale_proposal_result=stale_result,
@@ -281,6 +294,7 @@ def _print_result(result: ThunderstormDemoResult) -> None:
     print("INITIAL STATE")
     print("THUNDERSTORM DETECTED")
     print("FAST PATH EXECUTED")
+    print("HUMAN SAFETY FAST PATH EXECUTED")
     print("NORMAL PROPOSAL CREATED")
     print(
         "ORGANIZATION SWITCHED: "
@@ -300,9 +314,12 @@ def _print_result(result: ThunderstormDemoResult) -> None:
     mower_1 = result.final_world_state.get_machine("mower_1")
     mower_2 = result.final_world_state.get_machine("mower_2")
     drone_1 = result.final_world_state.get_machine("drone_1")
+    player_1 = result.final_world_state.get_person("player_1")
     print(f"mower_1 status: {mower_1.status}")
     print(f"mower_2 location: {mower_2.zone}")
     print(f"drone_1 location: {drone_1.zone}")
+    print(f"drone_1 status: {drone_1.status}")
+    print(f"player_1 status: {player_1.status}")
     print(f"new_tasks_frozen: {result.final_world_state.new_tasks_frozen}")
     print(
         "world_version: "

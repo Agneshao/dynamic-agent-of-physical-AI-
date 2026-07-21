@@ -23,8 +23,10 @@ def test_auto_approved_thunderstorm_demo(tmp_path) -> None:
         CommandType.PAUSE_MACHINE,
         CommandType.PAUSE_MACHINE,
         CommandType.FREEZE_NEW_TASKS,
-        CommandType.RECALL_DRONE,
     )
+    assert tuple(
+        command.command_type for command in result.human_safety_commands
+    ) == (CommandType.ALERT_PERSON, CommandType.TRACK_PERSON)
     assert all(item.status == CommandStatus.VERIFIED for item in result.fast_path_results)
     assert result.normal_proposal.world_version == result.stale_submission_world_version
     assert result.normal_proposal.org_version == 1
@@ -42,10 +44,12 @@ def test_auto_approved_thunderstorm_demo(tmp_path) -> None:
         result.final_world_state.get_machine("mower_2").zone
         == "maintenance_base"
     )
+    assert result.final_world_state.get_machine("drone_1").zone == "zone_C"
     assert (
-        result.final_world_state.get_machine("drone_1").zone
-        == "maintenance_base"
+        result.final_world_state.get_machine("drone_1").status
+        == "tracking_person"
     )
+    assert result.final_world_state.get_person("player_1").status == "alerted"
     assert result.final_world_state.new_tasks_frozen is True
     assert result.final_world_version > result.initial_world_version
     record_types = {record.record_type for record in result.audit_records}
@@ -69,10 +73,12 @@ def test_rejected_approval_keeps_fast_path_safe_state(tmp_path) -> None:
     assert result.final_world_state.get_machine("mower_1").status == "paused"
     assert result.final_world_state.get_machine("mower_2").status == "paused"
     assert result.final_world_state.get_machine("mower_2").zone == "zone_D"
+    assert result.final_world_state.get_machine("drone_1").zone == "zone_C"
     assert (
-        result.final_world_state.get_machine("drone_1").zone
-        == "maintenance_base"
+        result.final_world_state.get_machine("drone_1").status
+        == "tracking_person"
     )
+    assert result.final_world_state.get_person("player_1").status == "alerted"
     assert result.final_world_state.new_tasks_frozen is True
 
 
@@ -88,5 +94,7 @@ def test_cli_summary_contains_required_markers(tmp_path, capsys) -> None:
     assert "ORGANIZATION SWITCHED: org_version 1 -> 2" in output
     assert "mower_1 status: holding" in output
     assert "mower_2 location: maintenance_base" in output
-    assert "drone_1 location: maintenance_base" in output
+    assert "drone_1 location: zone_C" in output
+    assert "drone_1 status: tracking_person" in output
+    assert "player_1 status: alerted" in output
     assert "new_tasks_frozen: True" in output

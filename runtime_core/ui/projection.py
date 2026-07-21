@@ -118,6 +118,8 @@ def build_observability_view(result: ThunderstormDemoResult) -> ObservabilityVie
             status="CRITICAL",
             world_version=result.initial_world_version + 1,
             org_version=result.initial_org_version,
+            sender="weather_source",
+            recipient="world_state_kernel",
             facts=(
                 UiFact(name="condition", value="thunderstorm"),
                 UiFact(name="lightning_distance_km", value=2.5),
@@ -136,10 +138,50 @@ def build_observability_view(result: ThunderstormDemoResult) -> ObservabilityVie
                 command=command,
                 command_result=command_result,
                 title="Emergency fast path",
+                sender="emergency_fast_path",
+            )
+        )
+        sequence += 1
+    for command, command_result in zip(
+        result.human_safety_commands, result.human_safety_results
+    ):
+        events.append(
+            _command_event(
+                sequence=sequence,
+                command=command,
+                command_result=command_result,
+                title="Human safety fast path",
+                sender="human_safety_fast_path",
             )
         )
         sequence += 1
 
+    events.append(
+        ObservabilityEvent(
+            sequence=sequence,
+            layer=ObservabilityLayer.ORGANIZATION,
+            kind="ORGANIZATION_PLAN",
+            title="Minimum organization selected",
+            summary=result.organization_plan.reason,
+            status="RECOMMENDED",
+            world_version=result.stale_submission_world_version,
+            org_version=result.initial_org_version,
+            sender="minimal_organization_selector",
+            recipient="mode_manager",
+            facts=(
+                UiFact(
+                    name="required_capabilities",
+                    value=result.organization_plan.required_capabilities,
+                ),
+                UiFact(
+                    name="selected_roles",
+                    value=result.organization_plan.selected_roles,
+                ),
+            ),
+            timestamp=result.final_organization.activated_at,
+        )
+    )
+    sequence += 1
     events.append(
         ObservabilityEvent(
             sequence=sequence,
@@ -170,14 +212,36 @@ def build_observability_view(result: ThunderstormDemoResult) -> ObservabilityVie
         ObservabilityEvent(
             sequence=sequence,
             layer=ObservabilityLayer.EXECUTION,
+            kind="PROPOSAL_SUBMISSION",
+            title="Old proposal submitted",
+            summary="The NORMAL organization proposal entered the version gate.",
+            status="SUBMITTED",
+            world_version=result.stale_submission_world_version,
+            org_version=result.final_org_version,
+            sender="normal_operations_stub",
+            recipient="proposal_board",
+            facts=(
+                UiFact(name="proposal_world_version", value=result.normal_proposal.world_version),
+                UiFact(name="proposal_org_version", value=result.normal_proposal.org_version),
+                UiFact(name="current_world_version", value=result.stale_submission_world_version),
+                UiFact(name="current_org_version", value=result.final_org_version),
+            ),
+            timestamp=result.stale_proposal_result.timestamp,
+        )
+    )
+    sequence += 1
+    events.append(
+        ObservabilityEvent(
+            sequence=sequence,
+            layer=ObservabilityLayer.EXECUTION,
             kind="STALE_PROPOSAL_REJECTED",
             title="Old proposal rejected",
             summary=result.stale_proposal_result.message,
             status=result.stale_proposal_result.status.value,
             world_version=result.stale_proposal_result.checked_world_version,
             org_version=result.stale_proposal_result.checked_org_version,
-            sender="normal_operations_stub",
-            recipient="proposal_board",
+            sender="proposal_board",
+            recipient="normal_operations_stub",
             facts=(
                 UiFact(
                     name="rejection_code",
@@ -322,6 +386,7 @@ def _command_event(
     command: Command,
     command_result: CommandResult,
     title: str,
+    sender: str,
 ) -> ObservabilityEvent:
     return ObservabilityEvent(
         sequence=sequence,
@@ -332,10 +397,11 @@ def _command_event(
         status=command_result.status.value,
         world_version=command.world_version,
         org_version=command.org_version,
-        sender="emergency_fast_path",
-        recipient=command.target_id,
+        sender=sender,
+        recipient="simple_executor",
         facts=(
             UiFact(name="command_type", value=command.command_type.value),
+            UiFact(name="target_id", value=command.target_id),
             UiFact(name="idempotency_key", value=command.idempotency_key),
             UiFact(name="evidence_count", value=len(command_result.evidence)),
         ),

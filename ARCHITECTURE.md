@@ -10,7 +10,7 @@
 - 外部设备执行成功并不等于 Runtime 已同步成功，两者必须分别验证和记录。
 - Proposal、Command、世界版本和组织版本需要可审计、可复核和可幂等执行。
 
-当前项目是纯 Python 3.9 本地运行时，不连接网络模型、FastAPI、Isaac Sim 或真实机器人。
+当前项目是 Python 3.9 本地运行时。它提供可选的 StepFun `step-3.7-flash` 模型路由、ROS2 传感/设备传输边界和只读 HTTP 可观测性 UI；测试默认使用离线 fake transport，不依赖网络、ROS2 安装或真实机器人。
 
 ## 2. 总体架构
 
@@ -60,10 +60,13 @@ flowchart TB
 | Coordination 层 | `runtime_core/coordination` | Proposal 准入、去重、版本检查和生命周期失效 |
 | Policy 层 | `runtime_core/policies` | 无模型依赖的确定性安全策略 |
 | Execution 层 | `runtime_core/execution` | Command 执行、幂等、验证、证据和 Kernel 同步 |
-| Adapter 层 | `runtime_core/adapters` | 模拟外部设备真实状态，实现 SimulatorAdapter |
+| Adapter 层 | `runtime_core/adapters` | Mock、StepFun 和 ROS2 外部系统边界 |
+| Agent 层 | `runtime_core/agents` | 角色约束、生命周期、上下文投影和结构化模型 Handler |
+| Orchestration 层 | `runtime_core/orchestration` | 紧急组织内多 Agent 消息编排 |
 | Audit 层 | `runtime_core/audit` | 追加式 JSONL 审计记录和校验 |
 | Port 层 | `runtime_core/ports` | Planner、模型路由和 Simulator 的抽象接口 |
 | Demo 层 | `runtime_core/demo` | Stub Agent 与雷暴端到端编排 |
+| Trace/UI 层 | `runtime_core/trace`, `runtime_core/ui` | JSONL 运行轨迹和只读动态 Dashboard |
 
 ## 4. 完整目录结构
 
@@ -74,7 +77,15 @@ golf-runtime-core/
 │   ├── __init__.py
 │   ├── adapters/
 │   │   ├── __init__.py
-│   │   └── mock_adapter.py
+│   │   ├── mock_adapter.py
+│   │   ├── ros2_equipment_adapter.py
+│   │   ├── ros2_sensor_bridge.py
+│   │   └── stepfun_model_router.py
+│   ├── agents/
+│   │   ├── harness.py
+│   │   ├── model_handler.py
+│   │   ├── lifecycle.py
+│   │   └── role_profile.py
 │   ├── audit/
 │   │   ├── __init__.py
 │   │   └── ledger.py
@@ -98,7 +109,11 @@ golf-runtime-core/
 │   │   └── org_transition.py
 │   ├── policies/
 │   │   ├── __init__.py
-│   │   └── emergency_fast_path.py
+│   │   ├── emergency_fast_path.py
+│   │   ├── human_safety_fast_path.py
+│   │   └── person_safety_monitor.py
+│   ├── orchestration/
+│   │   └── emergency_team.py
 │   ├── ports/
 │   │   ├── __init__.py
 │   │   ├── model_router.py
@@ -113,7 +128,15 @@ golf-runtime-core/
 │   │   ├── evidence.py
 │   │   ├── organization.py
 │   │   ├── proposals.py
+│   │   ├── person_safety.py
+│   │   ├── ros2.py
 │   │   └── world_state.py
+│   ├── trace/
+│   │   └── exporter.py
+│   ├── ui/
+│   │   ├── projection.py
+│   │   ├── server.py
+│   │   └── static/
 │   └── world/
 │       ├── __init__.py
 │       ├── snapshot_manager.py
@@ -209,10 +232,13 @@ stateDiagram-v2
 | 组件 | 类型 | 使用角色 | 行为 |
 |---|---|---|---|
 | `NormalOperationsStubPlanner` | 确定性 Stub Agent | operations | 在 NORMAL/WATCH 生成日常割草 Proposal |
-| `EmergencyStubPlanner` | 确定性 Stub Agent | incident_commander | 在 EMERGENCY 生成保持、回库和通知 Proposal |
-| `EmergencyFastPath` | 确定性安全策略 | 不依赖 Planner | 雷暴时立即暂停设备、召回无人机、冻结任务 |
+| `EmergencyTeamOrchestrator` | 多 Agent 编排 | incident_commander, safety, operations, communication | 通过版本绑定消息生成结构化部门输出和 Proposal |
+| `StructuredModelAgentHandler` | 模型 Agent Handler | 任一 RoleProfile | 通过 ModelRouterPort 请求 Pydantic 结构化输出 |
+| `EmergencyFastPath` | 确定性安全策略 | 不依赖 Planner | 雷暴时立即暂停设备并冻结任务 |
+| `HumanSafetyFastPath` | 确定性人员安全策略 | 不依赖 Planner | 有暴露人员时告警人员并保留无人机追踪 |
+| `PersonSafetyMonitor` | 感知状态处理器 | 不依赖 Planner | 将人员 ACK 和避难所到达验证写回 Kernel |
 
-`safety`、`maintenance`、`logistics`、`communication` 等目前是组织角色槽位，还没有各自独立的 LLM Agent 实现。`ModelRouterPort` 也是未来模型集成边界，当前没有连接 Step 3.7 或外部模型。
+`safety`、`operations`、`communication` 已有独立结构化输出契约。`StepFunModelRouter` 实现 `ModelRouterPort`，凭证只从 `STEP_API_KEY` 环境变量读取；确定性 Handler 仍是默认 Demo 路径，避免测试依赖外网。
 
 ## 7. Agent 控制面与执行面
 
@@ -340,6 +366,8 @@ Command
 - `recall_drone`
 - `freeze_new_tasks`
 - `notify_operator`
+- `alert_person`
+- `track_person`
 
 幂等键固定为：
 
@@ -419,7 +447,8 @@ sequenceDiagram
 
     Weather->>World: thunderstorm event
     World->>Fast: latest snapshot
-    Fast->>Exec: pause mowers / freeze tasks / recall drone
+    Fast->>Exec: pause mowers / freeze tasks
+    Fast->>Exec: alert exposed person / track with drone
     Exec->>Device: execute and verify
     Exec->>World: synchronize effects
     World->>Normal: snapshot W + org_version 1
@@ -454,7 +483,8 @@ proposal.org_version   != current.org_version
 |---|---|
 | mower_1 | `holding`，保持在 zone_B |
 | mower_2 | `idle`，位于 maintenance_base |
-| drone_1 | `idle`，位于 maintenance_base |
+| drone_1 | `tracking_person`，保留在 zone_C |
+| player_1 | `alerted`，等待 ACK 或到达验证 |
 | new tasks | frozen |
 | organization | EMERGENCY / org_version 2 |
 
@@ -463,7 +493,7 @@ proposal.org_version   != current.org_version
 - Emergency Proposal 仍然可以被接受。
 - 不执行后续 hold/return/notify Actions。
 - mower_1 和 mower_2 保持 Fast Path 产生的 paused 状态。
-- drone_1 已由 Fast Path 召回。
+- drone_1 继续执行人员追踪，不因后续 Proposal 被拒而返航。
 - 系统仍处于 EMERGENCY，且新任务保持冻结。
 
 ## 13. 审计架构
@@ -513,6 +543,10 @@ AuditLedger 是带 checksum 的 append-only JSONL 文件。当前记录类型包
 - Stub Planner 模式约束和版本绑定
 - Approval、逐 Action 最新版本执行和 fail-stop
 - 雷暴 Demo 自动批准与拒绝路径
+- StepFun 严格 JSON Schema 输出与 AgentHarness 接线
+- 人员告警、无人机追踪、ACK 和避难到达验证
+- ROS2 Sensor Bridge、Equipment Adapter 和 Kernel 同步
+- runtime_trace.jsonl 导出、HTTP 服务和 UI 投影
 
 完整测试命令：
 
@@ -521,7 +555,7 @@ cd /Users/zhiqihao/Documents/DGX/golf-runtime-core
 python3 -m pytest -q
 ```
 
-当前基线为 `108 passed`。
+当前基线为 `145 passed`。
 
 ## 16. 运行 Demo
 
@@ -546,19 +580,36 @@ EMERGENCY PROPOSAL ACCEPTED
 HUMAN APPROVAL: APPROVED or REJECTED
 ```
 
+### 16.1 运行 Dashboard
+
+```bash
+python3 -m runtime_core.ui.server --port 8765
+```
+
+浏览器读取 `/runtime_trace.jsonl`。该文件由同一次 Demo 运行导出；`scenario.js` 只在直接打开静态文件或 trace 请求失败时作为离线兜底。
+
+### 16.2 启用 StepFun Agent Handler
+
+设置 `STEP_API_KEY` 后，将 `StepFunModelRouter` 注入 `StructuredModelAgentHandler`，再把 Handler 注入对应 `AgentHarness`。API key 不进入 schema、日志、trace 或仓库；模型输出必须完整通过目标 Pydantic schema 才能返回 AgentHarness。
+
+### 16.3 ROS2 接入
+
+`Ros2SensorBridge` 将 `/golf/weather`、设备 telemetry、人员 telemetry 和区域状态映射为 Kernel Event。`Ros2EquipmentAdapter` 依赖注入的 `Ros2CommandTransportPort` 发布命令并接收 ACK/观测；只有 `SimpleExecutor` 能把已验证观测同步到 WorldStateKernel。
+
 ## 17. 当前未实现的边界
 
 以下能力仍是未来扩展，不属于当前代码现状：
 
-- Step 3.7 或其他 LLM/VLM Agent 调用
 - DGX/vLLM 模型服务连接
-- Isaac Sim 或真实机器人连接
-- FastAPI 和网络服务
+- Isaac Sim 连接
+- 具体 `rclpy` Node/Action Client 部署（当前通过注入式 ROS2 transport port 接入）
+- 人员身份认证、手机/穿戴设备 ACK transport 和真实避难所定位源
 - CapabilityRegistry
 - PolicyVersionProvider
 - 复杂 PlanComposer 和 ConflictResolver
 - 多级人工审批
 - 分布式事务和恢复协议
 - 动态组织搜索算法
+- `MinimalOrganizationSelector` 推荐四角色，但 ModeManager 当前 EMERGENCY 配置还包含 logistics；需要统一配置来源
 
 这些扩展应通过现有 Port、Proposal、Command 和版本所有权边界接入，而不绕过 WorldStateKernel、ModeManager、ProposalBoard 或 SimpleExecutor。
