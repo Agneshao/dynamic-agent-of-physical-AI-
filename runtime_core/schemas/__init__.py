@@ -2,6 +2,19 @@
 
 from .audit import AuditRecord, AuditRecordType
 from .approval import ApprovalDecision, approve_proposal
+from .agent_messages import (
+    AgentMessage,
+    AgentMessageType,
+    AgentPayloadField,
+)
+from .agent_outputs import (
+    AgentContextView,
+    AgentInteractionRecord,
+    EmergencyTeamResult,
+    NotificationPlan,
+    OperationsPlan,
+    SafetyReport,
+)
 from .commands import (
     Command,
     CommandResult,
@@ -48,6 +61,11 @@ __all__ = [
     "AuditRecord",
     "AuditRecordType",
     "ApprovalDecision",
+    "AgentContextView",
+    "AgentInteractionRecord",
+    "AgentMessage",
+    "AgentMessageType",
+    "AgentPayloadField",
     "Command",
     "CommandResult",
     "CommandStatus",
@@ -57,6 +75,7 @@ __all__ = [
     "EvidenceKind",
     "Event",
     "EventSeverity",
+    "EmergencyTeamResult",
     "FrozenMachineState",
     "FrozenPersonState",
     "FrozenResourceReservationState",
@@ -68,6 +87,8 @@ __all__ = [
     "ExecutionReceipt",
     "MachineState",
     "OperatingMode",
+    "NotificationPlan",
+    "OperationsPlan",
     "OrganizationState",
     "PersonState",
     "Proposal",
@@ -82,6 +103,7 @@ __all__ = [
     "RouteState",
     "TaskState",
     "StoredProposal",
+    "SafetyReport",
     "WeatherState",
     "VerificationResult",
     "WorldSnapshot",

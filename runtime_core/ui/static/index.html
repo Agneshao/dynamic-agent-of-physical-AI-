@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Golf Course Runtime · Thunderstorm Emergency Demo</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="runtime-header">
+      <div class="title-block">
+        <span class="brand-mark">GR</span>
+        <div>
+          <p class="kicker">PHYSICAL AI / ORGANIZATION RUNTIME</p>
+          <h1>Golf Course Runtime · Thunderstorm Emergency Demo</h1>
+        </div>
+      </div>
+      <div class="header-status" aria-live="polite">
+        <div><span>MODE</span><strong id="headerMode">NORMAL</strong></div>
+        <div><span>WORLD_VERSION</span><strong id="headerWorld">v0</strong></div>
+        <div><span>ORG_VERSION</span><strong id="headerOrg">v1</strong></div>
+        <div><span>INCIDENT_ID</span><strong id="headerIncident">--</strong></div>
+        <div class="phase-cell"><span>CURRENT PHASE</span><strong id="headerPhase">BASELINE</strong></div>
+      </div>
+    </header>
+
+    <nav class="scenario-controls" aria-label="场景播放控制">
+      <div class="control-buttons">
+        <button id="playButton" class="primary" type="button">Play Scenario</button>
+        <button id="previousButton" type="button">Previous Step</button>
+        <button id="nextButton" type="button">Next Step</button>
+        <button id="resetButton" type="button">Reset</button>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-meta"><span id="stepCounter">BASELINE</span><span id="progressPercent">0%</span></div>
+        <div class="progress-track"><span id="progressBar"></span></div>
+      </div>
+    </nav>
+
+    <main>
+      <section class="organization-section">
+        <div class="section-title">
+          <div><p class="kicker">DYNAMIC ORGANIZATION</p><h2>组织架构重构</h2></div>
+          <div class="mode-transition"><span id="fromMode">NORMAL</span><i>→</i><strong id="toMode">NORMAL</strong></div>
+        </div>
+
+        <div class="organization-grid">
+          <div class="org-canvas-card">
+            <div class="canvas-toolbar">
+              <span id="orgCaption">NORMAL Organization</span>
+              <span id="communicationIndicator">No active transmission</span>
+            </div>
+            <div id="orgNetwork" class="org-network">
+              <svg id="reportingLines" class="reporting-lines" aria-hidden="true"></svg>
+              <div id="agentNodes" class="agent-nodes"></div>
+            </div>
+            <div class="node-legend">
+              <span><i class="dot activated"></i>Activated</span>
+              <span><i class="dot retained"></i>Retained</span>
+              <span><i class="dot suspended"></i>Suspended</span>
+              <span><i class="dot communicating"></i>Communicating</span>
+            </div>
+          </div>
+
+          <aside class="change-panel">
+            <div class="reason-block">
+              <p class="kicker">RECONFIGURATION DECISION</p>
+              <h3 id="changeTitle">Normal operations organization</h3>
+              <dl class="reason-list">
+                <div><dt>Trigger</dt><dd id="triggerValue">No active incident</dd></div>
+                <div><dt>Reason</dt><dd id="reasonValue">Routine golf course operations.</dd></div>
+                <div><dt>Required capabilities</dt><dd id="capabilityValue">Supervision, safety, operations, maintenance, resource, communication</dd></div>
+                <div><dt>Selected roles</dt><dd id="selectedValue">Supervisor, Safety, Operations, Maintenance, Resource, Communication</dd></div>
+              </dl>
+            </div>
+            <div class="role-change-grid">
+              <div><span>ACTIVATED</span><strong id="activatedRoles">None</strong></div>
+              <div><span>RETAINED</span><strong id="retainedRoles">All normal roles</strong></div>
+              <div><span>SUSPENDED</span><strong id="suspendedRoles">None</strong></div>
+            </div>
+            <article id="proposalGate" class="proposal-gate">
+              <div class="gate-head"><span>VERSION GATE</span><strong id="gateResult">WAITING</strong></div>
+              <div class="version-compare">
+                <div><span>OLD PROPOSAL</span><code>world_version = <b id="proposalWorld">--</b></code><code>org_version = <b id="proposalOrg">--</b></code></div>
+                <i>≠</i>
+                <div><span>CURRENT RUNTIME</span><code>world_version = <b id="runtimeWorld">--</b></code><code>org_version = <b id="runtimeOrg">--</b></code></div>
+              </div>
+              <p id="gateReason">旧 Proposal 尚未提交。</p>
+            </article>
+          </aside>
+        </div>
+      </section>
+
+      <section class="interaction-section">
+        <div class="section-title">
+          <div><p class="kicker">TRACE PLAYBACK</p><h2>消息与交互全过程</h2></div>
+          <div class="trace-key">TRACE SOURCE <strong>MOCK_SCENARIO_V1</strong></div>
+        </div>
+        <div class="interaction-grid">
+          <div class="timeline-card">
+            <div class="table-head"><span>SEQ</span><span>MESSAGE ROUTE</span><span>TYPE</span></div>
+            <ol id="messageTimeline" class="message-timeline"></ol>
+          </div>
+          <aside class="message-detail-card">
+            <div class="detail-head"><span>MESSAGE DETAIL</span><strong id="detailStatus">BASELINE</strong></div>
+            <div id="messageDetail" class="message-detail">
+              <div class="empty-detail">播放场景或选择一条消息查看结构化内容。</div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="physical-state-section">
+        <div class="section-title compact">
+          <div><p class="kicker">AUTHORITATIVE WORLD STATE</p><h2>最终设备与运行状态</h2></div>
+          <div class="kernel-owner">WRITER <strong>WorldStateKernel</strong></div>
+        </div>
+        <div id="deviceStateGrid" class="device-state-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./scenario.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

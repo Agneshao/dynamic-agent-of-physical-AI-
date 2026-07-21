@@ -19,13 +19,19 @@ from runtime_core.demo.stub_planners import (
 )
 from runtime_core.execution.proposal_execution import execute_approved_proposal
 from runtime_core.execution.simple_executor import SimpleExecutor
+from runtime_core.organization.minimal_org_selector import (
+    MinimalOrganizationPlan,
+    MinimalOrganizationSelector,
+)
 from runtime_core.organization.mode_manager import ModeManager
+from runtime_core.orchestration.emergency_team import EmergencyTeamOrchestrator
 from runtime_core.policies.emergency_fast_path import EmergencyFastPath
 from runtime_core.schemas.approval import ApprovalDecision, approve_proposal
 from runtime_core.schemas.audit import AuditRecord
 from runtime_core.schemas.commands import Command, CommandResult
 from runtime_core.schemas.events import Event, EventSeverity
-from runtime_core.schemas.organization import OperatingMode
+from runtime_core.schemas.agent_outputs import EmergencyTeamResult
+from runtime_core.schemas.organization import OperatingMode, OrganizationState
 from runtime_core.schemas.proposals import Proposal, ProposalAdmissionResult
 from runtime_core.schemas.world_state import (
     FrozenWorldState,
@@ -50,6 +56,11 @@ class ThunderstormDemoResult(BaseModel):
     final_org_version: int
     initial_mode: OperatingMode
     final_mode: OperatingMode
+    initial_world_state: FrozenWorldState
+    initial_organization: OrganizationState
+    final_organization: OrganizationState
+    organization_plan: MinimalOrganizationPlan
+    emergency_team_result: Optional[EmergencyTeamResult]
     fast_path_commands: tuple[Command, ...]
     fast_path_results: tuple[CommandResult, ...]
     normal_proposal: Proposal
@@ -69,6 +80,7 @@ def run_thunderstorm_demo(
     *,
     auto_approve: bool = True,
     audit_path: Optional[Path] = None,
+    use_agent_harness: bool = True,
 ) -> ThunderstormDemoResult:
     """Run the deterministic scenario without network or model dependencies."""
     timestamp = datetime.now(timezone.utc)
@@ -89,6 +101,9 @@ def run_thunderstorm_demo(
 
     initial_world_version = world_kernel.get_world_version()
     initial_organization = mode_manager.get_current_organization()
+    initial_world_state = FrozenWorldState.from_world_state(
+        world_kernel.get_current_state()
+    )
 
     thunderstorm = Event(
         event_type="weather.updated",
@@ -118,6 +133,14 @@ def run_thunderstorm_demo(
         mode_manager.get_current_organization(),
     )
 
+    organization_plan = MinimalOrganizationSelector().select(
+        event_type="critical_thunderstorm",
+        severity=thunderstorm.severity,
+        snapshot=normal_snapshot,
+        registered_roles=initial_organization.registered_roles,
+        incident_id=incident_id,
+    )
+
     mode_manager.transition(
         OperatingMode.EMERGENCY,
         reason="thunderstorm safety threshold reached",
@@ -130,10 +153,19 @@ def run_thunderstorm_demo(
 
     emergency_snapshot = snapshot_manager.create_snapshot()
     emergency_organization = mode_manager.get_current_organization()
-    emergency_proposal = EmergencyStubPlanner().create_proposal(
-        emergency_snapshot,
-        emergency_organization,
-    )
+    emergency_team_result: Optional[EmergencyTeamResult] = None
+    if use_agent_harness:
+        emergency_team_result = EmergencyTeamOrchestrator().run(
+            snapshot=emergency_snapshot,
+            organization=emergency_organization,
+            plan=organization_plan,
+        )
+        emergency_proposal = emergency_team_result.proposal
+    else:
+        emergency_proposal = EmergencyStubPlanner().create_proposal(
+            emergency_snapshot,
+            emergency_organization,
+        )
     emergency_result = proposal_board.submit(emergency_proposal)
     emergency_validation = proposal_board.validate_for_use(
         emergency_proposal.proposal_id
@@ -172,6 +204,11 @@ def run_thunderstorm_demo(
         final_org_version=final_organization.org_version,
         initial_mode=initial_organization.mode,
         final_mode=final_organization.mode,
+        initial_world_state=initial_world_state,
+        initial_organization=initial_organization,
+        final_organization=final_organization,
+        organization_plan=organization_plan,
+        emergency_team_result=emergency_team_result,
         fast_path_commands=fast_path_result.commands,
         fast_path_results=fast_path_result.command_results,
         normal_proposal=normal_proposal,
