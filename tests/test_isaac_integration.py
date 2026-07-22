@@ -24,6 +24,7 @@ from runtime_core.schemas.isaac import (
     IsaacCommandResult,
     IsaacEntityObservation,
 )
+from runtime_core.schemas.proposals import ProposalParameter
 from runtime_core.schemas.world_state import MachineState, WeatherState, WorldState
 from runtime_core.world.state_kernel import WorldStateKernel
 
@@ -218,6 +219,68 @@ def test_adapter_timeout_returns_unknown_and_does_not_fake_verification(tmp_path
     assert receipt.status == CommandStatus.UNKNOWN
     assert receipt.message == "ISAAC_BRIDGE_TIMEOUT"
     assert verification.status == CommandStatus.UNKNOWN
+
+
+def test_adapter_verifies_move_to_zone_result(tmp_path) -> None:
+    protocol = IsaacFileProtocol(tmp_path)
+    incident_id = "daily-zone-move"
+    command = Command(
+        incident_id=incident_id,
+        idempotency_key=f"{incident_id}:move_to_zone:mower_2",
+        command_type=CommandType.MOVE_TO_ZONE,
+        target_id="mower_2",
+        parameters=(ProposalParameter(name="target_zone", value="ZONE_A"),),
+        source="test",
+        world_version=0,
+        org_version=1,
+        created_at=FIXED_TIME,
+    )
+
+    def respond() -> None:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            requests = protocol.list_requests()
+            if requests:
+                request = requests[0]
+                protocol.append_result(
+                    IsaacCommandResult(
+                        action_id=request.action_id,
+                        command_id=request.command_id,
+                        status=IsaacBridgeResultStatus.SUCCEEDED,
+                        message="mower reached ZONE_A",
+                        observed_at=FIXED_TIME,
+                        observation=IsaacEntityObservation(
+                            isaac_entity_id="Mower_02",
+                            entity_type="mower",
+                            status="MOWING",
+                            zone="ZONE_A",
+                            position=(-30.0, -25.0, 1.0),
+                            observed_at=FIXED_TIME,
+                        ),
+                    )
+                )
+                return
+            time.sleep(0.005)
+        raise AssertionError("Runtime move request was not written")
+
+    responder = threading.Thread(target=respond, daemon=True)
+    responder.start()
+    adapter = IsaacSimulatorAdapter(
+        tmp_path,
+        timeout_seconds=2,
+        poll_interval_seconds=0.005,
+        clock=lambda: FIXED_TIME,
+        protocol=protocol,
+    )
+
+    receipt = adapter.execute_command(command)
+    verification = adapter.verify_command(command, receipt)
+    responder.join(timeout=2)
+
+    assert verification.status == CommandStatus.VERIFIED
+    assert verification.observed_machine is not None
+    assert verification.observed_machine.zone == "zone_A"
+    assert verification.observed_machine.status == "mowing"
 
 
 def test_adapter_reports_missing_fresh_and_stale_heartbeat(tmp_path) -> None:

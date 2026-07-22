@@ -23,6 +23,9 @@ const runtime = {
   commandQueue: Promise.resolve(),
   generation: 0,
   modelConfigured: false,
+  isaacConfigured: false,
+  isaacConnected: false,
+  isaacPollTimer: null,
   mode: scenario.steps[scenario.initialCursor].mode,
   orgVersion: scenario.steps[scenario.initialCursor].orgVersion,
   incidentActive: false,
@@ -45,6 +48,8 @@ function init() {
   });
   render();
   checkModelStatus();
+  checkIsaacStatus();
+  runtime.isaacPollTimer = window.setInterval(checkIsaacStatus, 1000);
 }
 
 function submitChat(event) {
@@ -87,8 +92,40 @@ async function checkModelStatus() {
   }
 }
 
+async function checkIsaacStatus() {
+  try {
+    const response = await fetch("/api/isaac/state", { cache: "no-store" });
+    const state = await response.json();
+    runtime.isaacConfigured = Boolean(state.configured);
+    applyIsaacState(state);
+  } catch (error) {
+    runtime.isaacConfigured = false;
+    runtime.isaacConnected = false;
+  }
+  render();
+}
+
+function applyIsaacState(state) {
+  runtime.isaacConnected = Boolean(state.configured && state.connected);
+  Object.entries(state.entities || {}).forEach(([deviceId, observation]) => {
+    const device = runtime.devices[deviceId];
+    if (!device) return;
+    device.status = String(observation.status || device.status).toUpperCase();
+    const zone = String(observation.zone || device.zone);
+    const zoneMatch = zone.match(/^zone_([A-D])$/i);
+    device.zone = zoneMatch ? `FAIRWAY ${zoneMatch[1].toUpperCase()}` : zone === "maintenance_base" ? "MAINTENANCE" : zone.toUpperCase();
+    if (Array.isArray(observation.position) && observation.position.length >= 2) {
+      device.physicalX = roundCoordinate(Number(observation.position[0]));
+      device.physicalY = roundCoordinate(Number(observation.position[1]));
+      device.x = Math.max(0, Math.min(100, Number(observation.position[0]) + 50));
+      device.y = Math.max(0, Math.min(100, 50 - Number(observation.position[1])));
+    }
+  });
+}
+
 async function requestBackendReply(text, generation = runtime.generation) {
   setTyping(true);
+  let result;
   try {
     const response = await fetch("/api/chat", {
       method: "POST",
@@ -96,27 +133,40 @@ async function requestBackendReply(text, generation = runtime.generation) {
       body: JSON.stringify(buildChatRequest(text))
     });
     if (!response.ok) throw new Error(`chat request failed: ${response.status}`);
-    const result = await response.json();
-    if (generation !== runtime.generation) return;
-    runtime.typing = false;
-    runtime.messages.push({
-      role: "system",
-      kind: "chat",
-      sender: "Golf Runtime Agent",
-      time: mockTime(),
-      text: result.reply,
-      tags: [...result.tags, result.model, "STEPFUN"]
-    });
-    render();
-    await applyModelIntent(text, result.intent);
+    result = await response.json();
   } catch (error) {
     if (generation !== runtime.generation) return;
     runtime.typing = false;
     await handleMockWorkerMessage(text);
+    return;
+  }
+  if (generation !== runtime.generation) return;
+  runtime.typing = false;
+  runtime.messages.push({
+    role: "system",
+    kind: "chat",
+    sender: "Golf Runtime Agent",
+    time: mockTime(),
+    text: result.reply,
+    tags: [...result.tags, result.model, "STEPFUN"]
+  });
+  render();
+  try {
+    await applyModelIntent(text, result.intent);
+  } catch (error) {
+    runtime.messages.push({
+      role: "system",
+      kind: "authorization",
+      sender: "Runtime Execution Gate",
+      time: mockTime(),
+      text: `Isaac 真实指令执行失败：${error.message}。Runtime 未使用 mock 伪造成功状态。`,
+      tags: ["LIVE COMMAND FAILED", "NO MOCK FALLBACK"]
+    });
+    render();
   }
 }
 
-function applyModelIntent(text, modelIntent) {
+async function applyModelIntent(text, modelIntent) {
   if (modelIntent === "ANSWER") return false;
   const explicitIntent = inferMockIntent(text);
   if (explicitIntent !== modelIntent) {
@@ -178,7 +228,7 @@ function inferMockIntent(text) {
   return "ANSWER";
 }
 
-function applyRuntimeIntent(text, intent) {
+async function applyRuntimeIntent(text, intent) {
   if (intent === "ANSWER") return false;
   if (intent === "REDIRECT_INSPECTION") return redirectInspection(text);
   if (intent === "RETURN_MACHINE_TO_BASE") return returnMachineToBase(text);
@@ -219,7 +269,7 @@ function applyRuntimeIntent(text, intent) {
   return true;
 }
 
-function returnMachineToBase(text) {
+async function returnMachineToBase(text) {
   const machineId = extractMachineId(text);
   if (!machineId) return rejectInstruction("请指定需要返回的设备，例如“割草机1返回维护区”。");
   const machine = runtime.devices[machineId];
@@ -228,6 +278,11 @@ function returnMachineToBase(text) {
     runtime.messages.push({ role: "system", kind: "chat", sender: "Operations Agent", time: mockTime(), text: `${machineId} 已位于 MAINTENANCE，无需重复返回。`, tags: ["COMMAND NO-OP", `WORLD v${runtime.worldVersion}`] });
     render();
     return true;
+  }
+
+  if (runtime.isaacConfigured) {
+    if (!runtime.isaacConnected) return rejectInstruction("Isaac Bridge 当前未连接，真实返回指令未下发。");
+    return executeLiveIsaacCommand("return_to_base", machineId, null);
   }
 
   const target = { x: machineId === "mower_1" ? 76 : 82, y: 84 };
@@ -244,7 +299,7 @@ function returnMachineToBase(text) {
   });
 }
 
-function assignMowingZone(text) {
+async function assignMowingZone(text) {
   if (runtime.mode !== "NORMAL" || runtime.incidentActive) return rejectInstruction("紧急事件期间割草机不能恢复日常割草任务。");
   const machineId = extractMachineId(text);
   const target = extractInspectionTarget(text);
@@ -265,6 +320,10 @@ function assignMowingZone(text) {
   if (authorityDecision.outcome === "HOLD_FOR_INSPECTION") {
     return applyMovementAuthorityHold(machineId, targetZone, authorityDecision);
   }
+  if (runtime.isaacConfigured) {
+    if (!runtime.isaacConnected) return rejectInstruction("Isaac Bridge 当前未连接，真实移动指令未下发。");
+    return executeLiveIsaacCommand("move_to_zone", machineId, `ZONE_${target}`);
+  }
   return moveDeviceSafely(machineId, { x, y }, {
     minimumClearance: 8,
     movingStatus: "TRANSITING",
@@ -276,6 +335,50 @@ function assignMowingZone(text) {
     acceptedText: `${machineId} 已接受 ${targetZone} 割草任务，正在从 ${machine.zone} 沿安全路线前往目标区域。`,
     arrivalText: `${machineId} 已到达 ${targetZone}，开始执行割草任务。`
   });
+}
+
+async function executeLiveIsaacCommand(commandType, targetId, targetZone) {
+  runtime.messages.push({
+    role: "system",
+    kind: "event",
+    sender: "Runtime Execution Gate",
+    time: mockTime(),
+    text: `${commandType} 已提交到真实 Isaac Bridge，等待物理状态验证。`,
+    tags: ["LIVE ISAAC COMMAND", targetId]
+  });
+  render();
+  const response = await fetch("/api/isaac/command", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      incident_id: runtime.incidentActive ? scenario.emergencyIncidentId : scenario.incidentId,
+      command_type: commandType,
+      target_id: targetId,
+      target_zone: targetZone,
+      operator_id: "course_operator_01",
+      confirmed: true,
+      world_version: runtime.worldVersion,
+      org_version: runtime.orgVersion
+    })
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.message || result.error || `HTTP ${response.status}`);
+  if (result.status !== "VERIFIED") throw new Error(result.message || `verification ${result.status}`);
+  applyIsaacState(result.state || {});
+  runtime.worldVersion += 1;
+  const machine = result.observed_machine;
+  const detail = machine ? `${machine.machine_id} ${machine.status} / ${machine.zone}` : targetId;
+  addDynamicEvidence("ISAAC COMMAND VERIFIED", "isaac_simulator_adapter", `${detail} · command ${result.command_id}`);
+  runtime.messages.push({
+    role: "system",
+    kind: "event",
+    sender: "Runtime Execution Gate",
+    time: mockTime(),
+    text: `Isaac 已回传并验证：${detail}。`,
+    tags: ["VERIFIED", "LIVE ISAAC", `WORLD v${runtime.worldVersion}`]
+  });
+  render();
+  return true;
 }
 
 function evaluateMowerMovementAuthority(machineId, targetZone, requestedTarget) {
@@ -860,6 +963,7 @@ function renderCourseMap() {
     courseMap.innerHTML = '<div class="storm-front" hidden></div><div class="fairway a"></div><div class="fairway b"></div><div class="fairway c"></div><div class="maintenance-base">MAINTENANCE</div><svg class="route-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="设备安全路线"></svg><div class="hazard-layer"></div><div class="device-layer"></div><div class="sim-watermark">ISAAC SIGNALS: MOCK INPUT</div>';
     courseMap.dataset.initialized = "true";
   }
+  courseMap.querySelector(".sim-watermark").textContent = runtime.isaacConnected ? "ISAAC SIGNALS: LIVE BRIDGE" : runtime.isaacConfigured ? "ISAAC SIGNALS: BRIDGE DISCONNECTED" : "ISAAC SIGNALS: MOCK INPUT";
   courseMap.querySelector(".storm-front").hidden = !runtime.incidentActive;
   courseMap.querySelector(".route-overlay").innerHTML = `
     ${peopleObstacles().map((person) => `<circle class="person-clearance" cx="${person.x}" cy="${person.y}" r="${maximumClearance}"></circle>`).join("")}
@@ -901,7 +1005,7 @@ function synchronizeHazards(stepId) {
 }
 
 function renderTelemetry() {
-  $("deviceTelemetry").innerHTML = Object.entries(runtime.devices).map(([id, device]) => `<div class="device-row"><div><strong>${escapeHtml(id)}</strong><span>${escapeHtml(device.type)} · ${escapeHtml(device.zone)}<br>COURSE POS ${device.x},${device.y}</span>${device.battery === null ? "" : `<div class="battery"><i style="width:${device.battery}%"></i></div>`}</div><span class="device-status">${escapeHtml(device.status)}</span></div>`).join("");
+  $("deviceTelemetry").innerHTML = Object.entries(runtime.devices).map(([id, device]) => `<div class="device-row"><div><strong>${escapeHtml(id)}</strong><span>${escapeHtml(device.type)} · ${escapeHtml(device.zone)}<br>COURSE POS ${device.physicalX ?? device.x},${device.physicalY ?? device.y}</span>${device.battery === null ? "" : `<div class="battery"><i style="width:${device.battery}%"></i></div>`}</div><span class="device-status">${escapeHtml(device.status)}</span></div>`).join("");
 }
 
 function renderEvidence() {

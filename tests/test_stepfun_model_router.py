@@ -118,6 +118,13 @@ def test_router_config_enforces_safe_completion_budget() -> None:
         StepFunRouterConfig(max_tokens=32)
 
 
+def test_router_config_allows_only_local_plain_http() -> None:
+    assert StepFunRouterConfig(base_url="http://127.0.0.1:8080/v1").base_url
+    assert StepFunRouterConfig(base_url="http://localhost:8080/v1").base_url
+    with pytest.raises(ValueError, match="localhost HTTP"):
+        StepFunRouterConfig(base_url="http://model.internal:8080/v1")
+
+
 def test_structured_handler_sends_only_serializable_frozen_inputs() -> None:
     class FakeRouter:
         def complete(self, **kwargs):

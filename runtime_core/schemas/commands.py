@@ -20,6 +20,7 @@ class CommandType(str, Enum):
     PAUSE_MACHINE = "pause_machine"
     HOLD_POSITION = "hold_position"
     RETURN_TO_BASE = "return_to_base"
+    MOVE_TO_ZONE = "move_to_zone"
     RECALL_DRONE = "recall_drone"
     FREEZE_NEW_TASKS = "freeze_new_tasks"
     NOTIFY_OPERATOR = "notify_operator"

@@ -362,6 +362,7 @@ def _expected_machine_status(command_type: CommandType) -> str:
         CommandType.PAUSE_MACHINE: "paused",
         CommandType.HOLD_POSITION: "holding",
         CommandType.RETURN_TO_BASE: "idle",
+        CommandType.MOVE_TO_ZONE: "mowing",
         CommandType.RECALL_DRONE: "idle",
         CommandType.TRACK_PERSON: "tracking_person",
     }.get(command_type, "unknown")

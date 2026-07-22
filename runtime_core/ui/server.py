@@ -1,4 +1,4 @@
-"""Dependency-free HTTP server for the read-only runtime observability UI."""
+"""Dependency-free HTTP server for observability and explicit Isaac control."""
 
 from __future__ import annotations
 
@@ -11,18 +11,26 @@ from typing import Optional
 
 from pydantic import ValidationError
 
+from runtime_core.adapters.isaac_simulator_adapter import IsaacSimulatorAdapter
 from runtime_core.adapters.stepfun_model_router import (
     StepFunModelRouter,
     StepFunModelRouterError,
+    StepFunRouterConfig,
 )
 from runtime_core.demo.thunderstorm_demo import run_thunderstorm_demo
 from runtime_core.ports.model_router import ModelRouterPort
+from runtime_core.schemas.isaac_control import IsaacControlCommandRequest
 from runtime_core.schemas.runtime_chat import RuntimeChatRequest
 from runtime_core.trace.exporter import dump_runtime_trace_jsonl
 from runtime_core.ui.chat_service import (
     RuntimeChatInvalidModelOutputError,
     RuntimeChatModelNotConfiguredError,
     RuntimeChatService,
+)
+from runtime_core.ui.isaac_control_service import (
+    IsaacControlDisconnectedError,
+    IsaacControlNotConfiguredError,
+    IsaacControlService,
 )
 from runtime_core.ui.projection import build_observability_view
 
@@ -31,11 +39,12 @@ STATIC_DIR = Path(__file__).with_name("static")
 
 
 class ObservabilityRequestHandler(BaseHTTPRequestHandler):
-    """Serve a precomputed, detached scenario projection and static assets."""
+    """Serve detached projections plus a validated live-control boundary."""
 
     scenario_payload: bytes = b"{}"
     trace_payload: bytes = b""
     chat_service = RuntimeChatService(None)
+    isaac_control_service = IsaacControlService(None)
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         route = self.path.split("?", 1)[0]
@@ -53,6 +62,10 @@ class ObservabilityRequestHandler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if route == "/api/isaac/state":
+            state = self.isaac_control_service.state()
+            self._send_json(state, status=200 if state["configured"] else 503)
+            return
         assets = {
             "/": ("index.html", "text/html; charset=utf-8"),
             "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -69,19 +82,30 @@ class ObservabilityRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         route = self.path.split("?", 1)[0]
-        if route != "/api/chat":
-            self.send_error(501, "Unsupported method")
+        if route == "/api/chat":
+            self._handle_chat()
             return
+        if route == "/api/isaac/command":
+            self._handle_isaac_command()
+            return
+        self.send_error(501, "Unsupported method")
+
+    def _read_request_body(self) -> Optional[bytes]:
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             self._send_json({"error": "INVALID_CONTENT_LENGTH"}, status=400)
-            return
+            return None
         if content_length <= 0 or content_length > 65_536:
             self._send_json({"error": "INVALID_REQUEST_SIZE"}, status=400)
+            return None
+        return self.rfile.read(content_length)
+
+    def _handle_chat(self) -> None:
+        raw = self._read_request_body()
+        if raw is None:
             return
         try:
-            raw = self.rfile.read(content_length)
             request = RuntimeChatRequest.model_validate_json(raw)
             reply = self.chat_service.reply(request)
         except (ValidationError, json.JSONDecodeError) as exc:
@@ -110,6 +134,33 @@ class ObservabilityRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _handle_isaac_command(self) -> None:
+        raw = self._read_request_body()
+        if raw is None:
+            return
+        try:
+            request = IsaacControlCommandRequest.model_validate_json(raw)
+            result = self.isaac_control_service.execute(request)
+        except (ValidationError, json.JSONDecodeError) as exc:
+            self._send_json(
+                {"error": "INVALID_ISAAC_COMMAND", "message": str(exc)},
+                status=400,
+            )
+            return
+        except IsaacControlNotConfiguredError as exc:
+            self._send_json(
+                {"error": "ISAAC_NOT_CONFIGURED", "message": str(exc)},
+                status=503,
+            )
+            return
+        except IsaacControlDisconnectedError as exc:
+            self._send_json(
+                {"error": "ISAAC_DISCONNECTED", "message": str(exc)},
+                status=503,
+            )
+            return
+        self._send_json(result.model_dump(mode="json"))
+
     def log_message(self, format: str, *args: object) -> None:
         del format, args
 
@@ -133,8 +184,9 @@ def create_server(
     port: int = 8765,
     audit_path: Optional[Path] = None,
     model_router: Optional[ModelRouterPort] = None,
+    isaac_adapter: Optional[IsaacSimulatorAdapter] = None,
 ) -> ThreadingHTTPServer:
-    """Create a server whose payload is isolated from all runtime writer objects."""
+    """Create the operator UI server with detached reads and explicit live control."""
     result = run_thunderstorm_demo(audit_path=audit_path)
     view = build_observability_view(result)
     runtime_trace_payload = dump_runtime_trace_jsonl(result)
@@ -144,13 +196,42 @@ def create_server(
     ).encode("utf-8")
     resolved_model_router = model_router
     if resolved_model_router is None and os.environ.get("STEP_API_KEY"):
-        resolved_model_router = StepFunModelRouter()
-    runtime_chat_service = RuntimeChatService(resolved_model_router)
+        resolved_model_router = StepFunModelRouter(
+            StepFunRouterConfig(
+                model=os.environ.get("STEPFUN_MODEL", "step-3.7-flash"),
+                base_url=os.environ.get(
+                    "STEPFUN_BASE_URL", "https://api.stepfun.com/v1"
+                ),
+                max_tokens=int(os.environ.get("STEPFUN_MAX_TOKENS", "2048")),
+                reasoning_effort=os.environ.get("STEPFUN_REASONING_EFFORT", "low"),
+            )
+        )
+
+    model_name = "step-3.7-flash"
+    if isinstance(resolved_model_router, StepFunModelRouter):
+        model_name = resolved_model_router.config.model
+    runtime_chat_service = RuntimeChatService(
+        resolved_model_router,
+        model_name=model_name,
+    )
+
+    resolved_isaac_adapter = isaac_adapter
+    bridge_directory = os.environ.get("GOLF_ISAAC_BRIDGE_DIR")
+    if resolved_isaac_adapter is None and bridge_directory:
+        resolved_isaac_adapter = IsaacSimulatorAdapter(
+            bridge_directory,
+            timeout_seconds=float(os.environ.get("GOLF_ISAAC_COMMAND_TIMEOUT", "90")),
+            heartbeat_timeout_seconds=float(
+                os.environ.get("GOLF_ISAAC_HEARTBEAT_TIMEOUT", "3")
+            ),
+        )
+    resolved_isaac_control_service = IsaacControlService(resolved_isaac_adapter)
 
     class BoundHandler(ObservabilityRequestHandler):
         scenario_payload = payload
         trace_payload = runtime_trace_payload
         chat_service = runtime_chat_service
+        isaac_control_service = resolved_isaac_control_service
 
     return ThreadingHTTPServer((host, port), BoundHandler)
 

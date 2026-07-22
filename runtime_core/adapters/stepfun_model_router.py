@@ -45,8 +45,14 @@ class StepFunRouterConfig:
     def __post_init__(self) -> None:
         if not self.model:
             raise ValueError("model must not be empty")
-        if not self.base_url.startswith("https://"):
-            raise ValueError("base_url must use HTTPS")
+        secure_remote = self.base_url.startswith("https://")
+        local_http = self.base_url.startswith(
+            ("http://127.0.0.1", "http://localhost")
+        )
+        if not secure_remote and not local_http:
+            raise ValueError(
+                "base_url must use HTTPS or localhost HTTP"
+            )
         if self.max_tokens < 256:
             raise ValueError("max_tokens must be at least 256")
         if self.reasoning_effort not in ("low", "medium", "high"):
