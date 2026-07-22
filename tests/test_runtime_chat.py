@@ -98,6 +98,15 @@ def test_chat_service_sends_detached_context_and_requires_typed_output() -> None
     assert "world_state_kernel" not in prompt
 
 
+def test_chat_service_uses_configured_local_model_timeout() -> None:
+    router = FakeRouter()
+    service = RuntimeChatService(router, timeout_seconds=60)
+
+    service.reply(make_request())
+
+    assert router.calls[0]["timeout_seconds"] == 60
+
+
 def test_chat_service_fails_closed_without_model_router() -> None:
     with pytest.raises(RuntimeChatModelNotConfiguredError):
         RuntimeChatService(None).reply(make_request())

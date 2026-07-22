@@ -62,9 +62,13 @@ class RuntimeChatService:
         model_router: Optional[ModelRouterPort],
         *,
         model_name: str = "step-3.7-flash",
+        timeout_seconds: float = 20.0,
     ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
         self._model_router = model_router
         self.model_name = model_name
+        self.timeout_seconds = float(timeout_seconds)
 
     @property
     def configured(self) -> bool:
@@ -95,7 +99,7 @@ class RuntimeChatService:
             ),
             output_schema=RuntimeChatReply,
             priority=20,
-            timeout_seconds=20.0,
+            timeout_seconds=self.timeout_seconds,
         )
         if not isinstance(result, RuntimeChatReply):
             raise RuntimeChatInvalidModelOutputError(

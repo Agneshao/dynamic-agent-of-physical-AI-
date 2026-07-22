@@ -213,6 +213,9 @@ def create_server(
     runtime_chat_service = RuntimeChatService(
         resolved_model_router,
         model_name=model_name,
+        timeout_seconds=float(
+            os.environ.get("STEPFUN_CHAT_TIMEOUT_SECONDS", "20")
+        ),
     )
 
     resolved_isaac_adapter = isaac_adapter
