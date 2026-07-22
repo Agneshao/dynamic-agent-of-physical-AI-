@@ -1,6 +1,6 @@
-# dynamic agent of physical AI
+# Dynamic agent of Physical AI
 
-> **Athena · NVIDIA DGX Spark 黑客松**
+> **  NVIDIA DGX Spark 黑客松**
 >
 > 一个能在物理世界变化导致计划失效之前，动态重构多 Agent 组织的运行时。
 
@@ -10,7 +10,7 @@
 
 > **根据突发事件组建覆盖必要能力的最小 Agent 组织，在不减少安全检查的前提下降低协调延迟，帮助工作人员更快完成应急决策与处置。**
 
-## 为什么需要 Athena
+## 为什么需要 dynamic agent
 
 软件可以保存日志、重复测试，但物理世界无法暂停。
 
