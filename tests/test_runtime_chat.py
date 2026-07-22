@@ -153,6 +153,8 @@ def test_chat_service_detects_zone_inspection_redirection() -> None:
         ("让割草机1中断任务返回维护区", RuntimeChatIntent.RETURN_MACHINE_TO_BASE),
         ("mower_2 立即回家", RuntimeChatIntent.RETURN_MACHINE_TO_BASE),
         ("让割草机1去A区割草", RuntimeChatIntent.ASSIGN_MOWING_ZONE),
+        ("M2移动到A区", RuntimeChatIntent.ASSIGN_MOWING_ZONE),
+        ("M1返回维护区", RuntimeChatIntent.RETURN_MACHINE_TO_BASE),
         ("割草机2从维护区调到C区执行任务", RuntimeChatIntent.ASSIGN_MOWING_ZONE),
         ("无人机完成C区任务后再去A区", RuntimeChatIntent.REDIRECT_INSPECTION),
         ("解除警报并恢复日常流程", RuntimeChatIntent.CLEAR_EMERGENCY),

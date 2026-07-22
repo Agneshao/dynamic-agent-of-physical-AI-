@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Optional
 
 from runtime_core.ports.model_router import ModelRouterPort
@@ -135,11 +136,11 @@ def _detect_explicit_intent(message: str) -> RuntimeChatIntent:
         for marker in _EXPLICIT_INTENT_MARKERS[RuntimeChatIntent.CLEAR_EMERGENCY]
     ):
         return RuntimeChatIntent.CLEAR_EMERGENCY
-    if any(machine in normalized for machine in ("割草机", "mower")) and any(
+    if _has_mower_reference(normalized) and any(
         verb in normalized for verb in ("回家", "返回", "返航", "回基地", "回维护区")
     ):
         return RuntimeChatIntent.RETURN_MACHINE_TO_BASE
-    if any(machine in normalized for machine in ("割草机", "mower")) and any(
+    if _has_mower_reference(normalized) and any(
         verb in normalized for verb in ("前往", "去", "到", "调到", "改到")
     ):
         return RuntimeChatIntent.ASSIGN_MOWING_ZONE
@@ -155,6 +156,12 @@ def _detect_explicit_intent(message: str) -> RuntimeChatIntent:
         if any(marker in normalized for marker in markers):
             return intent
     return RuntimeChatIntent.ANSWER
+
+
+def _has_mower_reference(message: str) -> bool:
+    return any(marker in message for marker in ("割草机", "mower")) or bool(
+        re.search(r"(?<![a-z0-9])m0?[12](?![a-z0-9])", message)
+    )
 
 
 def _is_maintenance_clearance_command(message: str) -> bool:

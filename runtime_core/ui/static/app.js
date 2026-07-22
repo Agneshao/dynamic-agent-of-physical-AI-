@@ -215,8 +215,8 @@ function inferMockIntent(text) {
   if (containsAny(normalized, ["解除警报", "解除雷暴", "结束紧急", "恢复日常", "恢复正常", "all clear"])) return "CLEAR_EMERGENCY";
   if (containsAny(normalized, ["确认进入", "进入紧急", "批准切换", "同意切换", "授权进入"])) return "APPROVE_EMERGENCY";
   if (containsAny(normalized, ["暂不切换", "保持 normal", "继续监测", "拒绝切换"])) return "DEFER_EMERGENCY";
-  if (containsAny(normalized, ["割草机", "mower"]) && containsAny(normalized, ["回家", "返回", "返航", "回基地", "回维护区"])) return "RETURN_MACHINE_TO_BASE";
-  if (containsAny(normalized, ["割草机", "mower"]) && containsAny(normalized, ["前往", "去", "到", "调到", "改到"])) return "ASSIGN_MOWING_ZONE";
+  if (containsMowerReference(normalized) && containsAny(normalized, ["回家", "返回", "返航", "回基地", "回维护区"])) return "RETURN_MACHINE_TO_BASE";
+  if (containsMowerReference(normalized) && containsAny(normalized, ["前往", "去", "到", "调到", "改到", "移动到"])) return "ASSIGN_MOWING_ZONE";
   if (containsAny(normalized, ["无人机", "drone"]) && containsAny(normalized, ["前往", "飞往", "转到", "改到", "去", "调到"])) return "REDIRECT_INSPECTION";
   if (normalized.includes("巡检") && containsAny(normalized, ["前往", "飞往", "转到", "改到", "去"])) return "REDIRECT_INSPECTION";
   if (containsAny(normalized, ["开始巡检", "开始无人机", "执行巡检", "无人机巡检"])) return "START_INSPECTION";
@@ -454,7 +454,7 @@ function clearMaintenanceHazard() {
 
 function extractMachineId(text) {
   const normalized = text.toLowerCase();
-  const match = normalized.match(/(?:割草机|mower[_\s-]*)([12])/);
+  const match = normalized.match(/(?:割草机|mower[_\s-]*)([12])/) || normalized.match(/(?:^|[^a-z0-9])m0?([12])(?=$|[^a-z0-9])/);
   return match ? `mower_${match[1]}` : null;
 }
 
@@ -1027,6 +1027,7 @@ function deviceStatusReply() {
 }
 
 function containsAny(text, candidates) { return candidates.some((candidate) => text.includes(candidate)); }
+function containsMowerReference(text) { return containsAny(text, ["割草机", "mower"]) || /(?:^|[^a-z0-9])m0?[12](?=$|[^a-z0-9])/.test(text); }
 function isMaintenanceClearanceCommand(text) {
   const compact = text.toLowerCase().replaceAll(" ", "").replaceAll("區", "区").replaceAll("檢", "检").replaceAll("復", "复").replaceAll("維", "维");
   const zoneC = containsAny(compact, ["c区", "c球道", "zonec", "fairwayc"]);
