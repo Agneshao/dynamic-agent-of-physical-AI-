@@ -26,6 +26,7 @@ class CommandType(str, Enum):
     NOTIFY_OPERATOR = "notify_operator"
     ALERT_PERSON = "alert_person"
     TRACK_PERSON = "track_person"
+    ACTIVATE_THUNDERSTORM = "activate_thunderstorm"
 
 
 class CommandStatus(str, Enum):

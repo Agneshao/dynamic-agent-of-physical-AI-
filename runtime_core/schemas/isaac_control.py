@@ -17,8 +17,9 @@ _CONTROL_COMMANDS = {
     CommandType.RETURN_TO_BASE,
     CommandType.MOVE_TO_ZONE,
     CommandType.RECALL_DRONE,
+    CommandType.ACTIVATE_THUNDERSTORM,
 }
-_CONTROL_TARGETS = {"mower_1", "mower_2", "drone_1"}
+_CONTROL_TARGETS = {"mower_1", "mower_2", "drone_1", "runtime"}
 _MOWING_ZONES = {"ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D"}
 
 
@@ -57,6 +58,9 @@ class IsaacControlCommandRequest(BaseModel):
             raise ValueError("command_type is not enabled for the operator UI")
         if self.target_id not in _CONTROL_TARGETS:
             raise ValueError("target_id is not enabled for the operator UI")
+        if self.command_type == CommandType.ACTIVATE_THUNDERSTORM:
+            if self.target_id != "runtime":
+                raise ValueError("activate_thunderstorm must target runtime")
         if self.command_type == CommandType.MOVE_TO_ZONE:
             if not self.target_id.startswith("mower_"):
                 raise ValueError("move_to_zone currently supports mower targets only")

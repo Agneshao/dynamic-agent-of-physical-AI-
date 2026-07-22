@@ -117,7 +117,7 @@ window.GOLF_RUNTIME_DEMO = {
       id: "collaboration", label: "Agent 会商", mode: "EMERGENCY", worldVersion: 13, orgVersion: 2,
       title: "生成紧急处置方案", detail: "Safety、Operations、Communication 汇总位置证据。",
       route: "Safety / Operations / Communication → Incident Commander", clock: "14:22:09.740", lightningKm: 6.1,
-      chat: "多 Agent 会商完成：立即通知 player_1 撤离；mower_1 原地保持；mower_2 返回维护区；drone_1 跟踪人员直至到达 Clubhouse。",
+      chat: "多 Agent 会商完成：立即通知 player_1 撤离；mower_1、mower_2 分别返回休息泊位；drone_1 先定位人员，再沿疏散路线护送至休息区。",
       chatTags: ["3 AGENT REPORTS", "PLAN READY", "BOUND W13/O2"],
       evidence: { source: "agent_harness", result: "3 REPORTS", detail: "human evacuation · mower safety · communication plan" }
     },
@@ -132,42 +132,44 @@ window.GOLF_RUNTIME_DEMO = {
     {
       id: "intervention", label: "紧急干预", mode: "EMERGENCY", worldVersion: 17, orgVersion: 2,
       title: "人员撤离与设备安全动作", detail: "SimpleExecutor 执行并逐项验证四项动作。",
-      route: "Incident Commander → SimpleExecutor ↔ MockIsaacAdapter", clock: "14:22:11.160", lightningKm: 5.5,
+      route: "Incident Commander → SimpleExecutor ↔ IsaacSimulatorAdapter", clock: "14:22:11.160", lightningKm: 5.5,
       statePatch: {
-        mower_1: { status: "HOLDING" },
+        mower_1: { status: "RETURNING", zone: "SERVICE ROAD" },
         mower_2: { status: "RETURNING", zone: "SERVICE ROAD", x: 74, y: 74 },
-        drone_1: { status: "TRACKING PERSON", x: 39, y: 43 },
+        drone_1: { status: "LOCATING PERSON", x: 39, y: 43 },
         player_1: { status: "EVACUATING", x: 44, y: 46 }
       },
-      chat: "首轮干预已验证：player_1 开始撤离；mower_1 已 HOLDING；mower_2 正沿 SERVICE ROAD 返回；drone_1 正在跟踪人员。",
+      chat: "首轮干预已验证：player_1 开始撤离；两台割草机正沿 SERVICE ROAD 返回休息泊位；drone_1 正在定位人员。",
       chatTags: ["4 COMMANDS VERIFIED", "WORLD v17", "RECHECK REQUIRED"],
-      evidence: { source: "simple_executor/mock_isaac_adapter", result: "INTERVENTION VERIFIED", detail: "person evacuating · mower_1 holding · mower_2 returning · drone tracking" }
+      evidence: { source: "simple_executor/isaac_adapter", result: "INTERVENTION VERIFIED", detail: "person evacuating · both mowers returning · drone locating person" }
     },
     {
       id: "position_recheck", label: "位置复核", mode: "EMERGENCY", worldVersion: 18, orgVersion: 2,
       title: "干预过程中再次确认位置", detail: "Sensor Bridge 回传人员与割草机最新位置。",
       route: "Sensor Bridge → Safety / Operations → Incident Commander", clock: "14:22:12.020", lightningKm: 5.3,
       statePatch: {
+        mower_1: { status: "RETURNING", zone: "SERVICE ROAD", x: 76, y: 78 },
         mower_2: { status: "RETURNING", zone: "SERVICE ROAD", x: 78, y: 78 },
         drone_1: { status: "TRACKING PERSON", zone: "FAIRWAY B", x: 43, y: 45 },
         player_1: { status: "EVACUATING", zone: "EVACUATION ROUTE", x: 50, y: 51 }
       },
-      chat: "位置复核 02：player_1 已进入 EVACUATION ROUTE；mower_1 仍在 FAIRWAY B 安全保持；mower_2 位于 SERVICE ROAD；drone_1 与人员保持视觉联系。",
+      chat: "位置复核 02：player_1 已进入 EVACUATION ROUTE；两台割草机位于 SERVICE ROAD；drone_1 已确认人员位置并保持跟随。",
       chatTags: ["POSITION REPORT 02", "PERSON MOVING", "MOWERS CONFIRMED"],
-      evidence: { source: "sensor_bridge_position_recheck", result: "POSITIONS UPDATED", detail: "player route · mower_1:B holding · mower_2:service road returning" }
+      evidence: { source: "sensor_bridge_position_recheck", result: "POSITIONS UPDATED", detail: "player route · both mowers returning · drone tracking" }
     },
     {
       id: "shelter_verified", label: "到达确认", mode: "EMERGENCY", worldVersion: 19, orgVersion: 2,
       title: "人员到达避险点并确认设备状态", detail: "Safety 完成人员闭环，Operations 完成设备复核。",
       route: "Drone / Equipment Telemetry → Safety / Operations → Incident Commander", clock: "14:22:12.880", lightningKm: 5.2,
       statePatch: {
-        mower_2: { status: "PARKED", zone: "MAINTENANCE", x: 79, y: 82 },
+        mower_1: { status: "PARKED", zone: "MAINTENANCE", x: 76, y: 82 },
+        mower_2: { status: "PARKED", zone: "MAINTENANCE", x: 82, y: 82 },
         drone_1: { status: "OVERWATCH", zone: "CLUBHOUSE", x: 49, y: 48 },
         player_1: { status: "SHELTERED", zone: "CLUBHOUSE", x: 57, y: 55 }
       },
-      chat: "位置确认 03：player_1 已到达 CLUBHOUSE，状态 SHELTERED；mower_1 在 FAIRWAY B 保持；mower_2 已停入 MAINTENANCE；drone_1 转为避险点监视。",
+      chat: "位置确认 03：player_1 已到达休息区，状态 SHELTERED；两台割草机已停入各自休息泊位；drone_1 跟随到达后转为避险点监视。",
       chatTags: ["SHELTER VERIFIED", "MOWERS SAFE", "WORLD v19"],
-      evidence: { source: "safety_operations_final_check", result: "SAFETY CLOSED LOOP", detail: "person sheltered · mower_1 holding · mower_2 parked" }
+      evidence: { source: "safety_operations_final_check", result: "SAFETY CLOSED LOOP", detail: "person sheltered · both mowers parked · drone overwatch" }
     }
   ]
 };

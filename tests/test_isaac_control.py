@@ -96,6 +96,22 @@ def test_control_request_requires_confirmation_and_valid_zone() -> None:
         )
 
 
+def test_thunderstorm_control_is_runtime_scoped() -> None:
+    payload = {
+        **make_payload(),
+        "command_type": "activate_thunderstorm",
+        "target_id": "runtime",
+        "target_zone": None,
+    }
+    request = IsaacControlCommandRequest.model_validate(payload)
+    assert request.target_id == "runtime"
+
+    with pytest.raises(ValidationError, match="must target runtime"):
+        IsaacControlCommandRequest.model_validate(
+            {**payload, "target_id": "mower_1"}
+        )
+
+
 def test_http_isaac_state_and_command_endpoints(tmp_path) -> None:
     adapter = FakeLiveIsaacAdapter()
     server = create_server(

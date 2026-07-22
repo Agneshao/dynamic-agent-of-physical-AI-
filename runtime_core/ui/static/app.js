@@ -248,6 +248,10 @@ async function applyRuntimeIntent(text, intent) {
       runtime.incidentActive = true;
       moveToStep("storm_event");
       runPreAuthorizationAssessment();
+      if (runtime.isaacConfigured) {
+        if (!runtime.isaacConnected) return rejectInstruction("雷暴事件已记录，但 Isaac Bridge 未连接，未启动真实天气和疏散动作。");
+        await executeLiveIsaacCommand("activate_thunderstorm", "runtime", null);
+      }
       return true;
     }
     return rejectInstruction("雷暴事件已经存在，不能重复注入。");

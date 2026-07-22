@@ -369,6 +369,8 @@ def _expected_machine_status(command_type: CommandType) -> str:
 
 
 def _matches_expected(command: Command, receipt: ExecutionReceipt) -> bool:
+    if command.command_type == CommandType.ACTIVATE_THUNDERSTORM:
+        return receipt.status == CommandStatus.EXECUTING
     if command.command_type == CommandType.FREEZE_NEW_TASKS:
         return receipt.new_tasks_frozen is True
     if command.command_type == CommandType.NOTIFY_OPERATOR:
