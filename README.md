@@ -1,6 +1,8 @@
 # Dynamic agent of Physical AI
 
-> **  NVIDIA DGX Spark 黑客松**
+[简体中文](README.md) | [English](README_EN.md)
+
+> **NVIDIA DGX Spark 黑客松**
 >
 > 一个能在物理世界变化导致计划失效之前，动态重构多 Agent 组织的运行时。
 
@@ -20,7 +22,7 @@
 - 外部设备返回成功，不代表 Runtime 已经完成状态同步。
 - 每个 Proposal、Command、组织转换和物理观测都必须可审计。
 
-Athena 使用版本化世界状态、动态 Agent 组织、确定性安全策略、证据驱动执行和追加式审计解决这些问题。
+dynamic agent 使用版本化世界状态、动态 Agent 组织、确定性安全策略、证据驱动执行和追加式审计解决这些问题。
 
 ## 演示场景
 
@@ -261,6 +263,6 @@ python3 -m pytest -q
 
 ## 项目愿景
 
-Athena 从高尔夫球场开始，但这套 Runtime 架构也可以扩展到工厂、仓储、园区、农场等需要多个 Agent 与物理设备在动态环境中安全协作的场景。
+dynamic agent 从高尔夫球场开始，但这套 Runtime 架构也可以扩展到工厂、仓储、园区、农场等需要多个 Agent 与物理设备在动态环境中安全协作的场景。
 
 > Physical AI Runtime 不仅要知道如何行动，还要知道**何时不该行动**。
