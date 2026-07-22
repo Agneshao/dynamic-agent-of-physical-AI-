@@ -76,13 +76,38 @@ def test_http_server_exposes_scenario_and_static_assets(tmp_path) -> None:
         page = connection.getresponse()
         body = page.read().decode("utf-8")
         assert page.status == 200
-        assert "Golf Course Runtime" in body
+        assert "Golf Course Physical AI Runtime" in body
+        assert "Golf Runtime Agent" in body
+        assert 'id="chatInput"' in body
+        assert "DECISION TRACE" not in body
+        assert 'id="decisionSteps"' not in body
 
         connection.request("GET", "/scenario.js")
         scenario_response = connection.getresponse()
         scenario_body = scenario_response.read().decode("utf-8")
         assert scenario_response.status == 200
-        assert "GOLF_RUNTIME_SCENARIO" in scenario_body
+        assert "GOLF_RUNTIME_DEMO" in scenario_body
+        assert "Mock Isaac signals" in scenario_body
+        assert "EmergencyModeAuthorizationPolicy" in scenario_body
+        assert "POSITION REPORT 02" in scenario_body
+        assert "COURSE(56,39)" in scenario_body
+
+        connection.request("GET", "/app.js")
+        app_response = connection.getresponse()
+        app_body = app_response.read().decode("utf-8")
+        assert app_response.status == 200
+        assert "ROUTE SAFETY VERIFIED" in app_body
+        assert "route_safety_policy" in app_body
+        assert "segmentClearance" in app_body
+        assert "HOLD_FOR_INSPECTION" in app_body
+        assert "movement_authority_policy" in app_body
+        assert "SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY" in app_body
+        assert "targetZone === hazard.zone" in app_body
+        assert "MAINTENANCE CLEARANCE VERIFIED" in app_body
+        assert "SAFETY VETO RELEASED" in app_body
+        assert 'hazard.active ? "LEAK" : "REPAIRED"' in app_body
+        assert 'courseMap.dataset.initialized' in app_body
+        assert 'window.requestAnimationFrame(updatePosition)' in app_body
 
         connection.request("POST", "/api/scenario")
         write_response = connection.getresponse()

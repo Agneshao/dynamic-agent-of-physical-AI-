@@ -19,6 +19,9 @@ def test_auto_approved_thunderstorm_demo(tmp_path) -> None:
     assert result.initial_org_version == 1
     assert result.final_mode == OperatingMode.EMERGENCY
     assert result.final_org_version == 2
+    assert result.mode_authorization.decision.approved is True
+    assert result.mode_authorization.decision.authorization_method == "HUMAN_OPERATOR"
+    assert result.mode_authorization.transition_result is not None
     assert tuple(command.command_type for command in result.fast_path_commands) == (
         CommandType.PAUSE_MACHINE,
         CommandType.PAUSE_MACHINE,
@@ -54,6 +57,7 @@ def test_auto_approved_thunderstorm_demo(tmp_path) -> None:
     assert result.final_world_version > result.initial_world_version
     record_types = {record.record_type for record in result.audit_records}
     assert AuditRecordType.ORGANIZATION_TRANSITION in record_types
+    assert AuditRecordType.EMERGENCY_MODE_AUTHORIZATION_APPROVED in record_types
     assert AuditRecordType.PROPOSAL_REJECTED in record_types
     assert AuditRecordType.PROPOSAL_ACCEPTED in record_types
     assert result.audit_log_path.exists()

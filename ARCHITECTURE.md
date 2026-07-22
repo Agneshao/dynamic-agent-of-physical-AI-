@@ -235,6 +235,9 @@ stateDiagram-v2
 | `EmergencyTeamOrchestrator` | 多 Agent 编排 | incident_commander, safety, operations, communication | 通过版本绑定消息生成结构化部门输出和 Proposal |
 | `StructuredModelAgentHandler` | 模型 Agent Handler | 任一 RoleProfile | 通过 ModelRouterPort 请求 Pydantic 结构化输出 |
 | `EmergencyFastPath` | 确定性安全策略 | 不依赖 Planner | 雷暴时立即暂停设备并冻结任务 |
+| `EmergencyModeAuthorizationPolicy` | 紧急模式人工授权策略 | AuditLedger、ModeManager | 授权审计成功后才允许组织切换 |
+| `RouteSafetyPolicy` | 设备移动前的确定性路线安全审查 | 人员坐标、起点、目标点、安全距离 | 输出直达、绕行、终点调整或拒绝；不直接修改设备或 WorldState |
+| `MovementAuthorityPolicy` | 多 Agent 设备移动冲突裁决 | Operations、Safety、Maintenance 的结构化意见 | Supervisor 发布最终结果；Safety 拥有安全否决，Maintenance 拥有维修放行权 |
 | `HumanSafetyFastPath` | 确定性人员安全策略 | 不依赖 Planner | 有暴露人员时告警人员并保留无人机追踪 |
 | `PersonSafetyMonitor` | 感知状态处理器 | 不依赖 Planner | 将人员 ACK 和避难所到达验证写回 Kernel |
 
@@ -586,11 +589,33 @@ HUMAN APPROVAL: APPROVED or REJECTED
 python3 -m runtime_core.ui.server --port 8765
 ```
 
-浏览器读取 `/runtime_trace.jsonl`。该文件由同一次 Demo 运行导出；`scenario.js` 只在直接打开静态文件或 trace 请求失败时作为离线兜底。
+当前交互演示由 `scenario.js` 中的 Mock Isaac telemetry、设备状态和 evidence 驱动，并明确显示 `MOCK CONNECTED` / `MOCK INPUT`。页面以 WeChat 风格的运行时通讯入口和实时 Mock Isaac 世界为核心，不显示线性阶段列表；状态变化通过 Agent 消息、地图坐标、设备 telemetry 和执行 Evidence 呈现。工作人员可查询世界、人员和设备状态，并通过聊天文本或消息内授权卡确认组织切换。服务仍提供 `/runtime_trace.jsonl`，后续可通过标准化 adapter 替换 mock 数据和通讯 transport，而不改变 WorldStateKernel、ModeManager、ProposalBoard 或 SimpleExecutor 的职责。
 
 ### 16.2 启用 StepFun Agent Handler
 
-设置 `STEP_API_KEY` 后，将 `StepFunModelRouter` 注入 `StructuredModelAgentHandler`，再把 Handler 注入对应 `AgentHarness`。API key 不进入 schema、日志、trace 或仓库；模型输出必须完整通过目标 Pydantic schema 才能返回 AgentHarness。
+设置 `STEP_API_KEY` 后，UI Server 会创建 `StepFunModelRouter`。工作人员消息通过 `/api/chat` 提交只读的 mode、双版本号、阶段和设备摘要，并要求模型返回 `RuntimeChatReply` 结构化结果；`/api/model-status` 暴露不含凭证的配置状态。未配置或模型请求失败时 UI 明确显示 `MOCK FALLBACK`。API key 不进入 schema、日志、trace 或仓库；模型没有 Kernel、ModeManager、ProposalBoard 或 Executor 写权限，明确授权仍由确定性逻辑处理。
+
+UI 场景在人工授权前采用指令驱动，不使用定时自动播放。StepFun 负责基于只读现场上下文生成自然语言回复；确定性命令解析器从工作人员原文生成受控 `RuntimeChatIntent`，并且对控制意图拥有最终权威。模型误报写意图时记录 `MODEL INTENT BLOCKED`，模型漏报明确命令时记录 `MODEL INTENT CORRECTED`。前端随后依据当前 Runtime 状态校验允许的转换；重复、无目标或缺少明确授权的控制指令不会改变版本或设备状态。人工确认紧急模式后，组织提交、Agent 协作、Proposal 准入和 Mock Isaac 执行结果通过消息与 Evidence 呈现。
+
+紧急授权是高层复合指令：活动雷暴已经进入 Runtime 后，工作人员可以直接授权“进入紧急状态”。UI 会先补齐风险判断、最小紧急组织建议和授权记录，再提交组织切换；它不会要求工作人员手工逐步推进 05、06、07。没有活动紧急事件时，同一授权请求会被拒绝。
+
+Mock 雷暴信号进入后，确定性 Safety Policy 会自动完成风险判断和最小组织建议，并停在人工授权门。此时不会切换 OperatingMode，也不会发布新的 OrganizationState；工作人员通过 Policy 授权卡批准后，才进入授权审计和 `ModeManager` 组织切换。
+
+日常巡检支持带目标区域的设备指令，例如“前往 B 区巡检”。该指令被解析为 `REDIRECT_INSPECTION`，由演示中的 Mock Adapter 更新无人机位置并验证，再增加 UI Runtime 的 `world_version`、写入动态 Evidence；它不会切换组织模式，也不会绕过紧急事件期间 Safety Agent 对无人机的调度权。
+
+割草机“返回/回家”指令被解析为 `RETURN_MACHINE_TO_BASE`，产生中断作业、返回途中和到达维护区的可观测状态，并实时更新地图坐标、telemetry、Evidence 和 `world_version`。全部安全目标到达指定位置后，位置复核停止。工作人员发出“解除警报/恢复日常”时，恢复策略驱动 `EMERGENCY → RECOVERY → NORMAL`，关闭 incident 并恢复日常设备任务。
+
+工作人员连续下达的聊天命令进入单一串行队列，前一条模型调用和 Runtime 动作完成后才处理下一条。无人机区域指派选择原文中最后一个目标区域，因此“完成 C 区后再去 A 区”会转派到 A；`ASSIGN_MOWING_ZONE` 支持将位于 Maintenance 的割草机重新派往指定 Fairway，并经过 `TRANSITING → MOWING` 的 Adapter 验证链。
+
+所有无人机和割草机移动在 Adapter 执行前都经过 `RouteSafetyPolicy`。Policy 使用设备起点、目标点和最新人员坐标检查线段净空；无人机默认保持 10 个场地坐标单位，割草机保持 8 个单位。目标点过近时先在目标区域内调整安全终点，直线路径不安全时生成绕行点，仍无法满足净空则拒绝命令。演示执行器按 waypoint 逐段移动，每段出发前重新读取人员位置；复核失败时设备进入 `HOLDING`，不会写入虚假的到达状态。路线结论、每段位置 ACK 和 Kernel 版本同步均写入 Evidence。
+
+C 区灌溉故障被发现后，割草机跨区指令先进入 `MovementAuthorityPolicy`。Operations 可以提出继续割草，Safety 可以基于湿滑和地面稳定性风险行使停机否决，Maintenance 负责判断是否已经完成隔离与检查。Supervisor 是最终结果的唯一发布者，但其规则顺序为 `SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY`，不能覆盖未解除的安全否决或伪造维修放行。受影响路线返回 `HOLD_FOR_INSPECTION`，随后只有 SimpleExecutor 执行停机并把验证结果同步到 Kernel。
+
+工作人员明确确认 C 区维修完成时，命令被确定性识别为 `CLEAR_MAINTENANCE_HAZARD`，不会与雷暴 `CLEAR_EMERGENCY` 混用。Maintenance 先提交修复和压力测试证据，Safety 据此解除区域否决，Supervisor 发布 C 区重新开放；危险状态和安全区域内被暂停设备的恢复在一次世界状态提交中使 `world_version + 1`。被拒绝的旧跨区命令不会自动重放，工作人员必须重新下达，新的移动仍需经过人员净空和路线检查。
+
+维修放行识别采用受控组合语义，不依赖单一固定句子：区域必须明确为 C 区、C 球道、Zone C 或 Fairway C，同时必须出现修好、修复完成、检修完毕、故障解除等完成式表达。“需要修复”之类计划表达不会触发放行。Mock Isaac 地图为每个设备保留稳定 DOM 节点，只更新位置和状态，因此雷暴撤离的 `EVACUATING → SHELTERED`、返回的 `RETURNING → PARKED` 和无人机跟踪过程会产生连续位置变化，而不会因重建节点丢失动画。
+
+同一个 Router 也可注入 `StructuredModelAgentHandler`，再由对应 `AgentHarness` 使用。模型输出必须完整通过目标 Pydantic schema 才能返回调用者。
 
 ### 16.3 ROS2 接入
 

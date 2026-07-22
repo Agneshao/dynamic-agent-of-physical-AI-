@@ -2,6 +2,20 @@
 
 from .audit import AuditRecord, AuditRecordType
 from .approval import ApprovalDecision, approve_proposal
+from .mode_authorization import EmergencyModeAuthorizationDecision
+from .movement_authority import (
+    AgentMovementPosition,
+    MovementAuthorityDecision,
+    MovementAuthorityRequest,
+    MovementDecisionOutcome,
+    MovementRecommendation,
+)
+from .route_safety import (
+    RoutePersonObstacle,
+    RoutePoint,
+    RouteSafetyPlan,
+    RouteSafetyRequest,
+)
 from .agent_messages import (
     AgentMessage,
     AgentMessageType,
@@ -46,6 +60,13 @@ from .ros2 import (
     Ros2CommandResponse,
     Ros2MessageEnvelope,
     Ros2SensorIngestResult,
+)
+from .runtime_chat import (
+    RuntimeChatDevice,
+    RuntimeChatHazard,
+    RuntimeChatIntent,
+    RuntimeChatReply,
+    RuntimeChatRequest,
 )
 from .world_state import (
     FrozenMachineState,
@@ -96,6 +117,11 @@ __all__ = [
     "FrozenZoneState",
     "ExecutionReceipt",
     "MachineState",
+    "AgentMovementPosition",
+    "MovementAuthorityDecision",
+    "MovementAuthorityRequest",
+    "MovementDecisionOutcome",
+    "MovementRecommendation",
     "OperatingMode",
     "NotificationPlan",
     "OperationsPlan",
@@ -117,6 +143,11 @@ __all__ = [
     "Ros2CommandResponse",
     "Ros2MessageEnvelope",
     "Ros2SensorIngestResult",
+    "RuntimeChatDevice",
+    "RuntimeChatHazard",
+    "RuntimeChatIntent",
+    "RuntimeChatReply",
+    "RuntimeChatRequest",
     "TaskState",
     "StoredProposal",
     "SafetyReport",

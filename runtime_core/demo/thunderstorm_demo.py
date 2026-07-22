@@ -26,6 +26,10 @@ from runtime_core.organization.minimal_org_selector import (
 from runtime_core.organization.mode_manager import ModeManager
 from runtime_core.orchestration.emergency_team import EmergencyTeamOrchestrator
 from runtime_core.policies.emergency_fast_path import EmergencyFastPath
+from runtime_core.policies.emergency_mode_authorization import (
+    EmergencyModeAuthorizationPolicy,
+    EmergencyModeAuthorizationResult,
+)
 from runtime_core.policies.human_safety_fast_path import HumanSafetyFastPath
 from runtime_core.schemas.approval import ApprovalDecision, approve_proposal
 from runtime_core.schemas.audit import AuditRecord
@@ -33,6 +37,7 @@ from runtime_core.schemas.commands import Command, CommandResult
 from runtime_core.schemas.events import Event, EventSeverity
 from runtime_core.schemas.agent_outputs import EmergencyTeamResult
 from runtime_core.schemas.organization import OperatingMode, OrganizationState
+from runtime_core.schemas.mode_authorization import EmergencyModeAuthorizationDecision
 from runtime_core.schemas.proposals import Proposal, ProposalAdmissionResult
 from runtime_core.schemas.world_state import (
     FrozenWorldState,
@@ -61,6 +66,7 @@ class ThunderstormDemoResult(BaseModel):
     initial_organization: OrganizationState
     final_organization: OrganizationState
     organization_plan: MinimalOrganizationPlan
+    mode_authorization: EmergencyModeAuthorizationResult
     emergency_team_result: Optional[EmergencyTeamResult]
     fast_path_commands: tuple[Command, ...]
     fast_path_results: tuple[CommandResult, ...]
@@ -96,6 +102,11 @@ def run_thunderstorm_demo(
     ledger = AuditLedger(resolved_audit_path)
     mode_manager = ModeManager(
         ledger, world_version_provider=world_kernel.get_world_version
+    )
+    mode_authorization_policy = EmergencyModeAuthorizationPolicy(
+        mode_manager,
+        ledger,
+        world_version_provider=world_kernel.get_world_version,
     )
     proposal_board = ProposalBoard(world_kernel, mode_manager, ledger)
     adapter = MockSimulatorAdapter()
@@ -152,11 +163,16 @@ def run_thunderstorm_demo(
         incident_id=incident_id,
     )
 
-    mode_manager.transition(
-        OperatingMode.EMERGENCY,
-        reason="thunderstorm safety threshold reached",
-        triggered_by="mock_weather_station",
+    mode_authorization = mode_authorization_policy.apply(
+        EmergencyModeAuthorizationDecision(
+            incident_id=incident_id,
+            approved=True,
+            authorized_by="demo_operator",
+            reason="thunderstorm safety threshold reached",
+        )
     )
+    if mode_authorization.transition_result is None:
+        raise RuntimeError("demo invariant failed: emergency mode was not authorized")
     stale_submission_world_version = world_kernel.get_world_version()
     if normal_proposal.world_version != stale_submission_world_version:
         raise RuntimeError("demo invariant failed: world changed before stale submission")
@@ -219,6 +235,7 @@ def run_thunderstorm_demo(
         initial_organization=initial_organization,
         final_organization=final_organization,
         organization_plan=organization_plan,
+        mode_authorization=mode_authorization,
         emergency_team_result=emergency_team_result,
         fast_path_commands=fast_path_result.commands,
         fast_path_results=fast_path_result.command_results,

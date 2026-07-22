@@ -1,336 +1,173 @@
 "use strict";
 
-// Replace this object with a normalized runtime_trace.jsonl adapter in production.
-window.GOLF_RUNTIME_SCENARIO = {
-  id: "thunderstorm-demo-001",
-  title: "Thunderstorm Emergency Demo",
-  initial: {
-    mode: "NORMAL",
-    worldVersion: 0,
-    orgVersion: 1,
-    phase: "BASELINE",
-    devices: {
-      mower_1: { type: "MOWER", status: "mowing", zone: "zone_B", battery: 82 },
-      mower_2: { type: "MOWER", status: "mowing", zone: "zone_D", battery: 76 },
-      drone_1: { type: "DRONE", status: "patrolling", zone: "zone_C", battery: 68 }
-    },
-    newTasksFrozen: false
+// Mock Isaac signals and runtime decisions. This object can later be replaced
+// by a normalized runtime_trace.jsonl + Isaac telemetry adapter.
+window.GOLF_RUNTIME_DEMO = {
+  incidentId: "NO ACTIVE INCIDENT",
+  emergencyIncidentId: "WX-0721-A",
+  initialCursor: 0,
+  approvalStepId: "approval",
+  roles: {
+    normal: ["supervisor", "safety", "operations", "maintenance", "resource", "communication"],
+    emergency: ["incident_commander", "safety", "operations", "communication"]
   },
-  final: {
-    mode: "EMERGENCY",
-    worldVersion: 7,
-    orgVersion: 2,
-    devices: {
-      mower_1: { type: "MOWER", status: "holding", zone: "zone_B", battery: 82 },
-      mower_2: { type: "MOWER", status: "idle", zone: "maintenance_base", battery: 76 },
-      drone_1: { type: "DRONE", status: "idle", zone: "maintenance_base", battery: 68 }
-    },
-    newTasksFrozen: true
+  roleLabels: {
+    supervisor: "Supervisor",
+    incident_commander: "Incident Commander",
+    safety: "Safety",
+    operations: "Operations",
+    maintenance: "Maintenance",
+    resource: "Resource",
+    communication: "Communication"
   },
-  organization: {
-    normal: {
-      leader: "supervisor",
-      roles: ["supervisor", "safety", "operations", "maintenance", "resource", "communication"],
-      reports: [
-        ["supervisor", "safety"],
-        ["supervisor", "operations"],
-        ["supervisor", "maintenance"],
-        ["supervisor", "resource"],
-        ["supervisor", "communication"]
-      ]
-    },
-    emergency: {
-      leader: "incident_commander",
-      roles: ["incident_commander", "safety", "operations", "communication"],
-      reports: [
-        ["incident_commander", "safety"],
-        ["incident_commander", "operations"],
-        ["incident_commander", "communication"]
-      ],
-      activated: ["incident_commander"],
-      retained: ["safety", "operations", "communication"],
-      suspended: ["supervisor", "maintenance", "resource"],
-      trigger: "CRITICAL thunderstorm · lightning distance 2.5 km",
-      reason: "Immediate safety response requires a smaller command structure with one accountable incident leader.",
-      capabilities: ["command", "safety_analysis", "equipment_planning", "notification"],
-      selectedRoles: ["incident_commander", "safety", "operations", "communication"]
+  initialDevices: {
+    mower_1: { type: "MOWER", status: "MOWING", zone: "FAIRWAY B", battery: 82, x: 28, y: 57 },
+    mower_2: { type: "MOWER", status: "MOWING", zone: "FAIRWAY D", battery: 76, x: 69, y: 68 },
+    drone_1: { type: "DRONE", status: "PATROL", zone: "ZONE C", battery: 68, x: 62, y: 30 },
+    player_1: { type: "PERSON", status: "PLAYING", zone: "FAIRWAY B", battery: null, x: 35, y: 52 }
+  },
+  initialHazards: {
+    irrigation_leak_c: {
+      type: "IRRIGATION_LEAK",
+      active: false,
+      discovered: false,
+      zone: "FAIRWAY C",
+      x: 56,
+      y: 39,
+      radius: 12,
+      clearance: "PENDING_MAINTENANCE_INSPECTION"
     }
-  },
-  proposalRejection: {
-    proposalWorldVersion: 5,
-    proposalOrgVersion: 1,
-    runtimeWorldVersion: 5,
-    runtimeOrgVersion: 2,
-    result: "REJECTED",
-    code: "STALE_ORGANIZATION_VERSION",
-    reason: "World facts are unchanged, but the organization authority changed. A NORMAL-org proposal cannot execute under EMERGENCY org_version 2."
   },
   steps: [
     {
-      sequence: 1,
-      phase: "THUNDERSTORM DETECTED",
-      sender: "WeatherSource",
-      recipient: "WorldStateKernel",
-      type: "WEATHER_EVENT",
-      summary: "Critical thunderstorm telemetry enters the authoritative world state.",
-      worldVersion: 1,
-      orgVersion: 1,
-      mode: "NORMAL",
-      payload: { condition: "thunderstorm", lightning_distance_km: 2.5, wind_speed_mps: 18.0 },
-      result: "WorldStateKernel validates and commits weather.updated."
+      id: "daily", label: "日常运营", mode: "NORMAL", worldVersion: 10, orgVersion: 1,
+      title: "早班任务正常运行", detail: "两台割草机作业，无人机执行例行巡检。",
+      route: "DailyScheduler → Operations", clock: "13:54:00.000", lightningKm: 42.0,
+      chat: "早班运行检查完成：两台割草机正在计划区域作业，无人机开始第 3 轮例行巡检，当前没有活动事故。",
+      chatTags: ["DAILY OPS", "ALL SYSTEMS NORMAL"],
+      evidence: { source: "daily_scheduler", result: "SHIFT ACTIVE", detail: "3 machines online · no incident" }
     },
     {
-      sequence: 2,
-      phase: "FAST PATH",
-      sender: "WorldStateKernel",
-      recipient: "EmergencyFastPath",
-      type: "CRITICAL_SNAPSHOT",
-      summary: "A versioned snapshot exposes the critical weather state.",
-      worldVersion: 1,
-      orgVersion: 1,
-      mode: "NORMAL",
-      payload: { severity: "CRITICAL", snapshot_world_version: 1 },
-      result: "EmergencyFastPath accepts the incident-bound snapshot."
+      id: "inspection", label: "无人机巡检", mode: "NORMAL", worldVersion: 11, orgVersion: 1,
+      title: "发现灌溉阀异常", detail: "drone_1 在 Zone C / COURSE(56,39) 发现漏水维修点。",
+      route: "drone_1 → WorldStateKernel", clock: "13:56:18.240", lightningKm: 39.5,
+      statePatch: { drone_1: { status: "INSPECTING", x: 56, y: 39 } },
+      chat: "巡检告示：drone_1 在 ZONE C、COURSE(56,39) 发现灌溉阀渗漏；图像、坐标与置信度已实时上报。未发现人员安全风险。",
+      chatTags: ["MAINTENANCE POINT", "ZONE C", "POS 56,39"],
+      evidence: { source: "drone_1_vision", result: "ANOMALY FOUND", detail: "irrigation valve leak · COURSE(56,39) · confidence 0.94" }
     },
     {
-      sequence: 3,
-      phase: "FAST PATH",
-      sender: "EmergencyFastPath",
-      recipient: "SimpleExecutor",
-      type: "SAFETY_COMMANDS",
-      summary: "Pause mowers, freeze new tasks, and recall the drone.",
-      worldVersion: 1,
-      orgVersion: 1,
-      mode: "NORMAL",
-      payload: { commands: ["pause mower_1", "pause mower_2", "freeze_new_tasks", "recall drone_1"] },
-      result: "Four incident-scoped idempotent commands are submitted."
+      id: "daily_proposal", label: "日常协作", mode: "NORMAL", worldVersion: 12, orgVersion: 1,
+      title: "维修任务已排入队列", detail: "Maintenance 接受低风险维修 Proposal。",
+      route: "Operations → Maintenance → ProposalBoard", clock: "13:56:19.100", lightningKm: 39.5,
+      statePatch: { drone_1: { status: "PATROL", x: 62, y: 30 } },
+      chat: "Maintenance Agent 已接收巡检证据，维修任务 maintenance-204 排入 15:30 队列，日常割草任务继续。",
+      chatTags: ["PROPOSAL ACCEPTED", "NORMAL ORG"],
+      evidence: { source: "proposal_board", result: "MAINTENANCE QUEUED", detail: "task maintenance-204 · org v1" }
     },
     {
-      sequence: 4,
-      phase: "FAST PATH VERIFIED",
-      sender: "SimpleExecutor",
-      recipient: "WorldStateKernel",
-      type: "VERIFIED_STATE_SYNC",
-      summary: "Verified adapter effects are synchronized into runtime state.",
-      worldVersion: 5,
-      orgVersion: 1,
-      mode: "NORMAL",
-      payload: { mower_1: "paused", mower_2: "paused", drone_1: "maintenance_base", new_tasks_frozen: true },
-      result: "Kernel commits four real state changes; world_version advances to 5.",
+      id: "storm_event", label: "天气事件", mode: "NORMAL", worldVersion: 13, orgVersion: 1,
+      title: "强雷暴预警进入 Runtime", detail: "雷暴预计 8 分钟后进入球场。",
+      route: "WeatherSource → WorldStateKernel", clock: "14:22:08.000", lightningKm: 6.8,
+      chat: "紧急告示：气象源报告强雷暴预计 8 分钟后进入球场。Fairway B 仍有 1 名人员，两台割草机正在作业。",
+      chatTags: ["NEW INCIDENT", "ETA 8 MIN", "PERSON EXPOSED"],
+      evidence: { source: "weather_station_03", result: "WEATHER W13", detail: "wind 14.7 m/s · lightning 6.8 km" }
+    },
+    {
+      id: "risk", label: "风险判断", mode: "NORMAL", worldVersion: 13, orgVersion: 1,
+      title: "安全风险达到 CRITICAL", detail: "人员暴露与运行设备需要立即处理。",
+      route: "Safety Agent → Incident Predictor", clock: "14:22:08.180", lightningKm: 6.8,
+      chat: "Safety Agent 判断风险为 CRITICAL：人员需撤离，割草机需暂停，无人机应保留用于人员追踪。",
+      chatTags: ["RISK CRITICAL", "FAST PATH READY"],
+      evidence: { source: "safety_agent", result: "RISK CRITICAL", detail: "person exposure · equipment active" }
+    },
+    {
+      id: "recommend", label: "组织建议", mode: "NORMAL", worldVersion: 13, orgVersion: 1,
+      title: "最小紧急组织已生成", detail: "等待工作人员确认控制面切换。",
+      route: "OrganizationSelector → ModeManager", clock: "14:22:08.320", lightningKm: 6.8,
+      chat: "建议切换到最小紧急组织：激活 Incident Commander，保留 Safety、Operations、Communication，暂停其余日常角色。",
+      chatTags: ["PLAN READY", "4 ACTIVE ROLES"],
+      evidence: { source: "organization_selector", result: "PLAN READY", detail: "4 active roles · 3 suspended" }
+    },
+    {
+      id: "approval", label: "人工授权", mode: "NORMAL", worldVersion: 13, orgVersion: 1,
+      title: "等待工作人员决策", detail: "ModeManager 尚未发布新 OrganizationState。",
+      route: "Golf Runtime Agent → course_operator_01", clock: "14:22:08.420", lightningKm: 6.8,
+      chat: "组织建议和执行范围已准备完成。请确认是否进入紧急模式。",
+      chatTags: ["HUMAN AUTH REQUIRED", "NO MUTATION YET"],
+      evidence: { source: "approval_gate", result: "WAITING", detail: "no control-plane mutation" }
+    },
+    {
+      id: "reconfigure", label: "组织重构", mode: "EMERGENCY", worldVersion: 13, orgVersion: 2,
+      title: "授权审计并切换组织", detail: "人工授权 Policy 审计成功后，ModeManager 发布 org v2。",
+      route: "Operator → AuthorizationPolicy → AuditLedger → ModeManager", clock: "14:22:09.060", lightningKm: 6.4,
+      chat: "人工授权已由 EmergencyModeAuthorizationPolicy 验证并写入 AuditLedger。ModeManager 已将组织从 NORMAL 原子切换为 EMERGENCY / org v2。",
+      chatTags: ["HUMAN AUTH AUDITED", "POLICY PASSED", "ORG v2"],
+      evidence: { source: "emergency_mode_authorization_policy", result: "AUTHORIZATION COMMITTED", detail: "course_operator_01 · HUMAN_OPERATOR · org transition allowed" }
+    },
+    {
+      id: "location_sweep", label: "位置排查", mode: "EMERGENCY", worldVersion: 13, orgVersion: 2,
+      title: "确认人员与设备初始位置", detail: "Safety 与 Operations 并行核对现场目标。",
+      route: "Incident Commander → Safety / Operations → Sensor Bridge", clock: "14:22:09.420", lightningKm: 6.2,
+      chat: "首轮位置排查：player_1 位于 FAIRWAY B；mower_1 位于 FAIRWAY B；mower_2 位于 FAIRWAY D；drone_1 位于 ZONE C。人员尚未进入避险点。",
+      chatTags: ["POSITION REPORT 01", "1 PERSON EXPOSED", "2 MOWERS ACTIVE"],
+      evidence: { source: "safety_operations_position_check", result: "POSITIONS CONFIRMED", detail: "player_1:B · mower_1:B · mower_2:D · drone_1:C" }
+    },
+    {
+      id: "collaboration", label: "Agent 会商", mode: "EMERGENCY", worldVersion: 13, orgVersion: 2,
+      title: "生成紧急处置方案", detail: "Safety、Operations、Communication 汇总位置证据。",
+      route: "Safety / Operations / Communication → Incident Commander", clock: "14:22:09.740", lightningKm: 6.1,
+      chat: "多 Agent 会商完成：立即通知 player_1 撤离；mower_1 原地保持；mower_2 返回维护区；drone_1 跟踪人员直至到达 Clubhouse。",
+      chatTags: ["3 AGENT REPORTS", "PLAN READY", "BOUND W13/O2"],
+      evidence: { source: "agent_harness", result: "3 REPORTS", detail: "human evacuation · mower safety · communication plan" }
+    },
+    {
+      id: "proposal", label: "紧急 Proposal", mode: "EMERGENCY", worldVersion: 13, orgVersion: 2,
+      title: "处置 Proposal 通过版本门", detail: "人员告警、设备控制与持续追踪获得准入。",
+      route: "Incident Commander → ProposalBoard", clock: "14:22:10.260", lightningKm: 5.7,
+      chat: "ProposalBoard 已接受 emergency-response-01：版本绑定 world v13 / org v2，允许下发人员告警、设备停止与持续位置核验指令。",
+      chatTags: ["PROPOSAL ACCEPTED", "VERSION MATCH", "EXECUTION READY"],
+      evidence: { source: "proposal_board", result: "ACCEPTED", detail: "world v13 · org v2 · continuous verification required" }
+    },
+    {
+      id: "intervention", label: "紧急干预", mode: "EMERGENCY", worldVersion: 17, orgVersion: 2,
+      title: "人员撤离与设备安全动作", detail: "SimpleExecutor 执行并逐项验证四项动作。",
+      route: "Incident Commander → SimpleExecutor ↔ MockIsaacAdapter", clock: "14:22:11.160", lightningKm: 5.5,
       statePatch: {
-        devices: {
-          mower_1: { status: "paused" },
-          mower_2: { status: "paused" },
-          drone_1: { status: "idle", zone: "maintenance_base" }
-        },
-        newTasksFrozen: true
-      }
+        mower_1: { status: "HOLDING" },
+        mower_2: { status: "RETURNING", zone: "SERVICE ROAD", x: 74, y: 74 },
+        drone_1: { status: "TRACKING PERSON", x: 39, y: 43 },
+        player_1: { status: "EVACUATING", x: 44, y: 46 }
+      },
+      chat: "首轮干预已验证：player_1 开始撤离；mower_1 已 HOLDING；mower_2 正沿 SERVICE ROAD 返回；drone_1 正在跟踪人员。",
+      chatTags: ["4 COMMANDS VERIFIED", "WORLD v17", "RECHECK REQUIRED"],
+      evidence: { source: "simple_executor/mock_isaac_adapter", result: "INTERVENTION VERIFIED", detail: "person evacuating · mower_1 holding · mower_2 returning · drone tracking" }
     },
     {
-      sequence: 5,
-      phase: "ORGANIZATION SELECTION",
-      sender: "MinimalOrganizationSelector",
-      recipient: "ModeManager",
-      type: "ORGANIZATION_PLAN",
-      summary: "Select the minimum role set required for thunderstorm response.",
-      worldVersion: 5,
-      orgVersion: 1,
-      mode: "NORMAL",
-      payload: { capabilities: ["command", "safety_analysis", "equipment_planning", "notification"], selected_roles: ["incident_commander", "safety", "operations", "communication"] },
-      result: "A recommendation is produced; only ModeManager may publish it."
-    },
-    {
-      sequence: 6,
-      phase: "ORGANIZATION SWITCH",
-      sender: "ModeManager",
-      recipient: "OrganizationState",
-      type: "NORMAL_TO_EMERGENCY",
-      summary: "Publish the audited EMERGENCY organization atomically.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { activated: ["incident_commander"], retained: ["safety", "operations", "communication"], suspended: ["supervisor", "maintenance", "resource"] },
-      result: "NORMAL → EMERGENCY committed. org_version advances from 1 to 2."
-    },
-    {
-      sequence: 7,
-      phase: "VERSION GATE",
-      sender: "NormalOperationsAgent",
-      recipient: "ProposalBoard",
-      type: "OLD_PROPOSAL_SUBMIT",
-      summary: "The NORMAL operations agent submits its pre-transition proposal.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { proposal_world_version: 5, proposal_org_version: 1, action: "continue_mowing" },
-      result: "ProposalBoard compares the proposal with both runtime versions."
-    },
-    {
-      sequence: 8,
-      phase: "OLD PROPOSAL REJECTED",
-      sender: "ProposalBoard",
-      recipient: "NormalOperationsAgent",
-      type: "PROPOSAL_REJECTED",
-      summary: "Reject the proposal because its organization authority is stale.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      status: "REJECTED",
-      payload: { proposal_world_version: 5, current_world_version: 5, proposal_org_version: 1, current_org_version: 2 },
-      result: "STALE_ORGANIZATION_VERSION"
-    },
-    {
-      sequence: 9,
-      phase: "MULTI-AGENT PLANNING",
-      sender: "IncidentCommander",
-      recipient: "Safety",
-      type: "TASK_ASSIGNMENT",
-      summary: "Assess immediate human and machine exposure.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { objective: "analyze_safety", visible_context: ["people", "machines", "zones", "weather"] },
-      result: "Safety agent starts analysis under the EMERGENCY organization binding."
-    },
-    {
-      sequence: 10,
-      phase: "MULTI-AGENT PLANNING",
-      sender: "Safety",
-      recipient: "IncidentCommander",
-      type: "SAFETY_REPORT",
-      summary: "Zone B is occupied; mower_1 must hold position.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { occupied_zones: ["zone_B"], unsafe_machines: ["mower_1"], required_holds: ["mower_1"], confidence: 0.98 },
-      result: "Structured SafetyReport returned; no command is emitted."
-    },
-    {
-      sequence: 11,
-      phase: "MULTI-AGENT PLANNING",
-      sender: "IncidentCommander",
-      recipient: "Operations",
-      type: "TASK_ASSIGNMENT",
-      summary: "Create bounded equipment actions from safety evidence.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { dependency: "SafetyReport", objective: "equipment_planning" },
-      result: "Operations receives the validated safety dependency."
-    },
-    {
-      sequence: 12,
-      phase: "MULTI-AGENT PLANNING",
-      sender: "Operations",
-      recipient: "IncidentCommander",
-      type: "OPERATIONS_PLAN",
-      summary: "Hold mower_1 and return mower_2 to maintenance base.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { actions: ["hold_position:mower_1", "return_to_base:mower_2"], confidence: 0.96 },
-      result: "Structured OperationsPlan returned; execution has not started."
-    },
-    {
-      sequence: 13,
-      phase: "MULTI-AGENT PLANNING",
-      sender: "IncidentCommander",
-      recipient: "Communication",
-      type: "TASK_ASSIGNMENT",
-      summary: "Prepare the operator notification plan.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { objective: "notify_operator", operator_target: "operator_1" },
-      result: "Communication receives incident context without execution privileges."
-    },
-    {
-      sequence: 14,
-      phase: "MULTI-AGENT PLANNING",
-      sender: "Communication",
-      recipient: "IncidentCommander",
-      type: "NOTIFICATION_PLAN",
-      summary: "Notify operator_1 that emergency posture is active.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { recipients: ["operator_1"], category: "EMERGENCY_RESPONSE" },
-      result: "Structured NotificationPlan returned."
-    },
-    {
-      sequence: 15,
-      phase: "PROPOSAL COMPOSITION",
-      sender: "IncidentCommander",
-      recipient: "ProposalBoard",
-      type: "EMERGENCY_PROPOSAL",
-      summary: "Compose all departmental outputs into one emergency proposal.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { evidence: ["SafetyReport", "OperationsPlan", "NotificationPlan"], actions: ["hold_position", "return_to_base", "notify_operator"] },
-      result: "IncidentCommander submits a Proposal, never a Command."
-    },
-    {
-      sequence: 16,
-      phase: "PROPOSAL ACCEPTED",
-      sender: "ProposalBoard",
-      recipient: "IncidentCommander",
-      type: "PROPOSAL_ACCEPTED",
-      summary: "Accept the emergency proposal against world v5 and org v2.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      status: "ACCEPTED",
-      payload: { checked_world_version: 5, checked_org_version: 2, action_count: 3 },
-      result: "Proposal lifecycle status becomes ACCEPTED."
-    },
-    {
-      sequence: 17,
-      phase: "HUMAN APPROVAL",
-      sender: "Operator",
-      recipient: "SimpleExecutor",
-      type: "APPROVAL_DECISION",
-      summary: "Approve the admitted emergency response.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      status: "APPROVED",
-      payload: { approved: true, approved_by: "demo_operator" },
-      result: "Execution may now materialize version-bound Commands."
-    },
-    {
-      sequence: 18,
-      phase: "COMMAND EXECUTION",
-      sender: "SimpleExecutor",
-      recipient: "MockAdapter",
-      type: "EXECUTE_AND_VERIFY",
-      summary: "Execute actions through the adapter and collect evidence.",
-      worldVersion: 5,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      payload: { commands: ["hold_position:mower_1", "return_to_base:mower_2", "notify_operator:operator_1"] },
-      result: "Adapter execution and verification complete."
-    },
-    {
-      sequence: 19,
-      phase: "FINAL STATE SYNC",
-      sender: "SimpleExecutor",
-      recipient: "WorldStateKernel",
-      type: "KERNEL_SYNC",
-      summary: "Synchronize verified physical effects into authoritative state.",
-      worldVersion: 7,
-      orgVersion: 2,
-      mode: "EMERGENCY",
-      status: "VERIFIED",
-      payload: { mower_1: "holding", mower_2: "maintenance_base", drone_1: "maintenance_base", new_tasks_frozen: true },
-      result: "Final physical state committed at world_version 7.",
+      id: "position_recheck", label: "位置复核", mode: "EMERGENCY", worldVersion: 18, orgVersion: 2,
+      title: "干预过程中再次确认位置", detail: "Sensor Bridge 回传人员与割草机最新位置。",
+      route: "Sensor Bridge → Safety / Operations → Incident Commander", clock: "14:22:12.020", lightningKm: 5.3,
       statePatch: {
-        devices: {
-          mower_1: { status: "holding" },
-          mower_2: { status: "idle", zone: "maintenance_base" }
-        },
-        newTasksFrozen: true
-      }
+        mower_2: { status: "RETURNING", zone: "SERVICE ROAD", x: 78, y: 78 },
+        drone_1: { status: "TRACKING PERSON", zone: "FAIRWAY B", x: 43, y: 45 },
+        player_1: { status: "EVACUATING", zone: "EVACUATION ROUTE", x: 50, y: 51 }
+      },
+      chat: "位置复核 02：player_1 已进入 EVACUATION ROUTE；mower_1 仍在 FAIRWAY B 安全保持；mower_2 位于 SERVICE ROAD；drone_1 与人员保持视觉联系。",
+      chatTags: ["POSITION REPORT 02", "PERSON MOVING", "MOWERS CONFIRMED"],
+      evidence: { source: "sensor_bridge_position_recheck", result: "POSITIONS UPDATED", detail: "player route · mower_1:B holding · mower_2:service road returning" }
+    },
+    {
+      id: "shelter_verified", label: "到达确认", mode: "EMERGENCY", worldVersion: 19, orgVersion: 2,
+      title: "人员到达避险点并确认设备状态", detail: "Safety 完成人员闭环，Operations 完成设备复核。",
+      route: "Drone / Equipment Telemetry → Safety / Operations → Incident Commander", clock: "14:22:12.880", lightningKm: 5.2,
+      statePatch: {
+        mower_2: { status: "PARKED", zone: "MAINTENANCE", x: 79, y: 82 },
+        drone_1: { status: "OVERWATCH", zone: "CLUBHOUSE", x: 49, y: 48 },
+        player_1: { status: "SHELTERED", zone: "CLUBHOUSE", x: 57, y: 55 }
+      },
+      chat: "位置确认 03：player_1 已到达 CLUBHOUSE，状态 SHELTERED；mower_1 在 FAIRWAY B 保持；mower_2 已停入 MAINTENANCE；drone_1 转为避险点监视。",
+      chatTags: ["SHELTER VERIFIED", "MOWERS SAFE", "WORLD v19"],
+      evidence: { source: "safety_operations_final_check", result: "SAFETY CLOSED LOOP", detail: "person sheltered · mower_1 holding · mower_2 parked" }
     }
   ]
 };

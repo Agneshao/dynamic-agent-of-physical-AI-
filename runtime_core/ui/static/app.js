@@ -1,397 +1,937 @@
 "use strict";
 
-let scenario = window.GOLF_RUNTIME_SCENARIO;
-let traceSource = "MOCK_SCENARIO_V1";
+const scenario = window.GOLF_RUNTIME_DEMO;
+const initialMessages = [
+  {
+    role: "system",
+    kind: "chat",
+    sender: "Golf Runtime Agent",
+    time: "13:54:00",
+    text: `${scenario.steps[0].chat} 等待工作人员下达下一条工作指令。`,
+    tags: scenario.steps[0].chatTags
+  }
+];
+
 const runtime = {
-  cursor: -1,
-  selectedSequence: null,
-  timer: null
-};
-
-const roleLabels = {
-  supervisor: "Supervisor",
-  incident_commander: "Incident Commander",
-  safety: "Safety",
-  operations: "Operations",
-  maintenance: "Maintenance",
-  resource: "Resource",
-  communication: "Communication",
-  logistics: "Logistics"
-};
-
-const roleInitials = {
-  supervisor: "SV",
-  incident_commander: "IC",
-  safety: "SA",
-  operations: "OP",
-  maintenance: "MT",
-  resource: "RS",
-  communication: "CM",
-  logistics: "LG"
-};
-
-const normalPositions = {
-  supervisor: [50, 20],
-  safety: [11, 61],
-  operations: [30.5, 61],
-  maintenance: [50, 61],
-  resource: [69.5, 61],
-  communication: [89, 61]
-};
-
-const emergencyPositions = {
-  incident_commander: [50, 18],
-  safety: [24, 55],
-  operations: [50, 55],
-  communication: [76, 55],
-  supervisor: [18, 86],
-  maintenance: [50, 86],
-  resource: [82, 86],
-  logistics: [91, 55]
-};
-
-const normalMobilePositions = {
-  supervisor: [25, 20],
-  safety: [10, 61],
-  operations: [29, 61],
-  maintenance: [48, 61],
-  resource: [67, 61],
-  communication: [86, 61]
-};
-
-const emergencyMobilePositions = {
-  incident_commander: [29, 18],
-  safety: [10, 55],
-  operations: [29, 55],
-  communication: [48, 55],
-  supervisor: [62, 86],
-  maintenance: [77, 86],
-  resource: [90, 86],
-  logistics: [90, 55]
+  cursor: scenario.initialCursor,
+  authorized: false,
+  deferred: false,
+  typing: false,
+  timer: null,
+  replyTimer: null,
+  deviceTimers: [],
+  commandQueue: Promise.resolve(),
+  generation: 0,
+  modelConfigured: false,
+  mode: scenario.steps[scenario.initialCursor].mode,
+  orgVersion: scenario.steps[scenario.initialCursor].orgVersion,
+  incidentActive: false,
+  worldVersion: scenario.steps[scenario.initialCursor].worldVersion,
+  dynamicEvidence: [],
+  activeRoutes: {},
+  messages: clone(initialMessages),
+  devices: clone(scenario.initialDevices),
+  hazards: clone(scenario.initialHazards)
 };
 
 const $ = (id) => document.getElementById(id);
 
 function init() {
-  $("headerIncident").textContent = scenario.id;
-  $("traceSource").textContent = traceSource;
-  bindControls();
-  renderTimeline();
+  $("incidentMetric").textContent = scenario.incidentId;
+  $("chatForm").addEventListener("submit", submitChat);
+  $("resetButton").addEventListener("click", resetDemo);
+  document.querySelectorAll("[data-query]").forEach((button) => {
+    button.addEventListener("click", () => sendWorkerMessage(button.dataset.query));
+  });
   render();
-  window.addEventListener("resize", () => window.requestAnimationFrame(drawReportingLines));
+  checkModelStatus();
 }
 
-function bindControls() {
-  $("playButton").addEventListener("click", togglePlayback);
-  $("previousButton").addEventListener("click", () => goToStep(runtime.cursor - 1));
-  $("nextButton").addEventListener("click", () => goToStep(runtime.cursor + 1));
-  $("resetButton").addEventListener("click", resetScenario);
+function submitChat(event) {
+  event.preventDefault();
+  const text = $("chatInput").value.trim();
+  if (!text) return;
+  $("chatInput").value = "";
+  sendWorkerMessage(text);
 }
 
-function togglePlayback() {
-  if (runtime.timer) {
-    stopPlayback();
-    return;
+function sendWorkerMessage(text) {
+  runtime.messages.push({
+    role: "operator",
+    kind: "chat",
+    sender: "工作人员",
+    time: mockTime(),
+    text,
+    tags: []
+  });
+  render();
+  const generation = runtime.generation;
+  runtime.commandQueue = runtime.commandQueue.then(() => {
+    if (generation !== runtime.generation) return undefined;
+    return requestBackendReply(text, generation);
+  });
+}
+
+async function checkModelStatus() {
+  try {
+    const response = await fetch("/api/model-status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`model status failed: ${response.status}`);
+    const status = await response.json();
+    runtime.modelConfigured = Boolean(status.configured);
+    $("modelStatus").textContent = runtime.modelConfigured ? `${status.model} · API CONNECTED` : `${status.model} · NOT CONFIGURED`;
+    $("modelConnection").classList.toggle("offline", !runtime.modelConfigured);
+  } catch (error) {
+    runtime.modelConfigured = false;
+    $("modelStatus").textContent = "MODEL STATUS UNAVAILABLE";
+    $("modelConnection").classList.add("offline");
   }
-  if (runtime.cursor >= scenario.steps.length - 1) resetScenario();
-  $("playButton").textContent = "Pause Scenario";
+}
+
+async function requestBackendReply(text, generation = runtime.generation) {
+  setTyping(true);
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildChatRequest(text))
+    });
+    if (!response.ok) throw new Error(`chat request failed: ${response.status}`);
+    const result = await response.json();
+    if (generation !== runtime.generation) return;
+    runtime.typing = false;
+    runtime.messages.push({
+      role: "system",
+      kind: "chat",
+      sender: "Golf Runtime Agent",
+      time: mockTime(),
+      text: result.reply,
+      tags: [...result.tags, result.model, "STEPFUN"]
+    });
+    render();
+    await applyModelIntent(text, result.intent);
+  } catch (error) {
+    if (generation !== runtime.generation) return;
+    runtime.typing = false;
+    await handleMockWorkerMessage(text);
+  }
+}
+
+function applyModelIntent(text, modelIntent) {
+  if (modelIntent === "ANSWER") return false;
+  const explicitIntent = inferMockIntent(text);
+  if (explicitIntent !== modelIntent) {
+    runtime.messages.push({
+      role: "system",
+      kind: "authorization",
+      sender: "Runtime Safety Gate",
+      time: mockTime(),
+      text: `模型建议 ${modelIntent}，但工作人员原文没有匹配的明确动作指令。建议已阻断，Runtime 状态未改变。`,
+      tags: ["MODEL INTENT BLOCKED", "NO STATE MUTATION"]
+    });
+    render();
+    return false;
+  }
+  return applyRuntimeIntent(text, modelIntent);
+}
+
+function buildChatRequest(message) {
+  const step = currentStep();
+  return {
+    message,
+    mode: runtime.mode,
+    world_version: runtime.worldVersion,
+    org_version: runtime.orgVersion,
+    incident_id: runtime.incidentActive ? scenario.emergencyIncidentId : scenario.incidentId,
+    phase: runtime.incidentActive ? "紧急事件处置" : step.label,
+    devices: Object.entries(runtime.devices).map(([deviceId, device]) => ({
+      device_id: deviceId,
+      device_type: device.type,
+      status: device.status,
+      zone: device.zone
+    })),
+    hazards: Object.entries(runtime.hazards).map(([hazardId, hazard]) => ({
+      hazard_id: hazardId,
+      hazard_type: hazard.type,
+      active: hazard.active,
+      zone: hazard.zone,
+      clearance: hazard.clearance
+    }))
+  };
+}
+
+function inferMockIntent(text) {
+  const normalized = text.toLowerCase();
+  if (isMaintenanceClearanceCommand(normalized)) return "CLEAR_MAINTENANCE_HAZARD";
+  if (containsAny(normalized, ["解除警报", "解除雷暴", "结束紧急", "恢复日常", "恢复正常", "all clear"])) return "CLEAR_EMERGENCY";
+  if (containsAny(normalized, ["确认进入", "进入紧急", "批准切换", "同意切换", "授权进入"])) return "APPROVE_EMERGENCY";
+  if (containsAny(normalized, ["暂不切换", "保持 normal", "继续监测", "拒绝切换"])) return "DEFER_EMERGENCY";
+  if (containsAny(normalized, ["割草机", "mower"]) && containsAny(normalized, ["回家", "返回", "返航", "回基地", "回维护区"])) return "RETURN_MACHINE_TO_BASE";
+  if (containsAny(normalized, ["割草机", "mower"]) && containsAny(normalized, ["前往", "去", "到", "调到", "改到"])) return "ASSIGN_MOWING_ZONE";
+  if (containsAny(normalized, ["无人机", "drone"]) && containsAny(normalized, ["前往", "飞往", "转到", "改到", "去", "调到"])) return "REDIRECT_INSPECTION";
+  if (normalized.includes("巡检") && containsAny(normalized, ["前往", "飞往", "转到", "改到", "去"])) return "REDIRECT_INSPECTION";
+  if (containsAny(normalized, ["开始巡检", "开始无人机", "执行巡检", "无人机巡检"])) return "START_INSPECTION";
+  if (containsAny(normalized, ["创建维修", "安排维修", "处理维修", "生成维修任务"])) return "CREATE_MAINTENANCE_TASK";
+  if (containsAny(normalized, ["模拟雷暴", "注入雷暴", "雷暴告警", "雷暴来了"])) return "INJECT_THUNDERSTORM";
+  if (containsAny(normalized, ["评估风险", "判断风险", "安全评估"])) return "ASSESS_RISK";
+  if (containsAny(normalized, ["生成紧急组织", "准备紧急组织", "组织建议"])) return "PREPARE_EMERGENCY_ORGANIZATION";
+  if (containsAny(normalized, ["请求授权", "提交授权", "询问是否切换"])) return "REQUEST_AUTHORIZATION";
+  return "ANSWER";
+}
+
+function applyRuntimeIntent(text, intent) {
+  if (intent === "ANSWER") return false;
+  if (intent === "REDIRECT_INSPECTION") return redirectInspection(text);
+  if (intent === "RETURN_MACHINE_TO_BASE") return returnMachineToBase(text);
+  if (intent === "ASSIGN_MOWING_ZONE") return assignMowingZone(text);
+  if (intent === "CLEAR_MAINTENANCE_HAZARD") return clearMaintenanceHazard();
+  if (intent === "CLEAR_EMERGENCY") return clearEmergency();
+  const transitions = {
+    START_INSPECTION: ["daily", "inspection"],
+    CREATE_MAINTENANCE_TASK: ["inspection", "daily_proposal"],
+    ASSESS_RISK: ["storm_event", "risk"],
+    PREPARE_EMERGENCY_ORGANIZATION: ["risk", "recommend"],
+    REQUEST_AUTHORIZATION: ["recommend", "approval"]
+  };
+  if (intent === "INJECT_THUNDERSTORM") {
+    const stormIndex = scenario.steps.findIndex((item) => item.id === "storm_event");
+    if (runtime.cursor < stormIndex) {
+      runtime.incidentActive = true;
+      moveToStep("storm_event");
+      runPreAuthorizationAssessment();
+      return true;
+    }
+    return rejectInstruction("雷暴事件已经存在，不能重复注入。");
+  }
+  if (intent === "APPROVE_EMERGENCY") {
+    if (!containsAny(text.toLowerCase(), ["确认", "批准", "同意", "授权", "进入紧急"])) return rejectInstruction("紧急模式授权必须由工作人员使用明确的确认语句。");
+    if (prepareEmergencyAuthorization()) return true;
+    approveEmergency(false);
+    return true;
+  }
+  if (intent === "DEFER_EMERGENCY") {
+    deferEmergency(false);
+    return true;
+  }
+  const transition = transitions[intent];
+  if (!transition) return false;
+  if (currentStep().id !== transition[0]) return rejectInstruction(`当前阶段为“${currentStep().label}”，不能执行该指令。`);
+  moveToStep(transition[1]);
+  return true;
+}
+
+function returnMachineToBase(text) {
+  const machineId = extractMachineId(text);
+  if (!machineId) return rejectInstruction("请指定需要返回的设备，例如“割草机1返回维护区”。");
+  const machine = runtime.devices[machineId];
+  if (!machine || machine.type !== "MOWER") return rejectInstruction(`未找到可执行返回指令的设备 ${machineId}。`);
+  if (machine.status === "PARKED" && machine.zone === "MAINTENANCE") {
+    runtime.messages.push({ role: "system", kind: "chat", sender: "Operations Agent", time: mockTime(), text: `${machineId} 已位于 MAINTENANCE，无需重复返回。`, tags: ["COMMAND NO-OP", `WORLD v${runtime.worldVersion}`] });
+    render();
+    return true;
+  }
+
+  const target = { x: machineId === "mower_1" ? 76 : 82, y: 84 };
+  return moveDeviceSafely(machineId, target, {
+    minimumClearance: 8,
+    movingStatus: "RETURNING",
+    movingZone: "SERVICE ROAD",
+    finalStatus: "PARKED",
+    finalZone: "MAINTENANCE",
+    acceptedResult: "RETURN COMMAND VERIFIED",
+    arrivalResult: "ARRIVAL VERIFIED",
+    acceptedText: `${machineId} 已中断当前割草任务，将沿已审查的安全路线返回 MAINTENANCE。`,
+    arrivalText: `${machineId} 已到达 MAINTENANCE 并停车，返回任务完成。`
+  });
+}
+
+function assignMowingZone(text) {
+  if (runtime.mode !== "NORMAL" || runtime.incidentActive) return rejectInstruction("紧急事件期间割草机不能恢复日常割草任务。");
+  const machineId = extractMachineId(text);
+  const target = extractInspectionTarget(text);
+  if (!machineId) return rejectInstruction("请指定割草机编号，例如“割草机1去A区割草”。");
+  if (!target) return rejectInstruction("请指定目标区域，例如“割草机1去A区割草”。");
+  const machine = runtime.devices[machineId];
+  if (!machine || machine.type !== "MOWER") return rejectInstruction(`未找到割草设备 ${machineId}。`);
+  const targetZone = `FAIRWAY ${target}`;
+  if (machine.status === "MOWING" && machine.zone === targetZone) {
+    runtime.messages.push({ role: "system", kind: "chat", sender: "Operations Agent", time: mockTime(), text: `${machineId} 已在 ${targetZone} 割草，无需重复调度。`, tags: ["COMMAND NO-OP", `WORLD v${runtime.worldVersion}`] });
+    render();
+    return true;
+  }
+
+  const coordinates = { A: [20, 40], B: [32, 58], C: [60, 34], D: [69, 68] };
+  const [x, y] = coordinates[target];
+  const authorityDecision = evaluateMowerMovementAuthority(machineId, targetZone, { x, y });
+  if (authorityDecision.outcome === "HOLD_FOR_INSPECTION") {
+    return applyMovementAuthorityHold(machineId, targetZone, authorityDecision);
+  }
+  return moveDeviceSafely(machineId, { x, y }, {
+    minimumClearance: 8,
+    movingStatus: "TRANSITING",
+    movingZone: "SERVICE ROAD",
+    finalStatus: "MOWING",
+    finalZone: targetZone,
+    acceptedResult: "MOWING ASSIGNMENT ACCEPTED",
+    arrivalResult: "MOWING STARTED",
+    acceptedText: `${machineId} 已接受 ${targetZone} 割草任务，正在从 ${machine.zone} 沿安全路线前往目标区域。`,
+    arrivalText: `${machineId} 已到达 ${targetZone}，开始执行割草任务。`
+  });
+}
+
+function evaluateMowerMovementAuthority(machineId, targetZone, requestedTarget) {
+  const hazard = runtime.hazards.irrigation_leak_c;
+  const route = planSafeRoute(machineId, requestedTarget, 8);
+  const points = [route.start, ...route.waypoints];
+  const targetAffected = targetZone === hazard.zone || pointDistance(requestedTarget, hazard) <= hazard.radius;
+  const routeAffected = hazard.active && (targetAffected || pathIntersectsHazard(points, hazard));
+  return {
+    outcome: routeAffected ? "HOLD_FOR_INSPECTION" : "ALLOW",
+    finalAuthority: "Supervisor",
+    winningRule: routeAffected ? "SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY" : "NO_ACTIVE_ROUTE_HAZARD",
+    hazard,
+    targetZone,
+    routeAffected
+  };
+}
+
+function applyMovementAuthorityHold(machineId, targetZone, decision) {
+  const machine = runtime.devices[machineId];
+  runtime.messages.push(
+    { role: "system", kind: "chat", sender: "Operations Agent", time: mockTime(), text: `提议继续执行：将 ${machineId} 从 ${machine.zone} 调往 ${targetZone}，保持割草进度。`, tags: ["PROPOSAL", "CONTINUE_MOWING"] },
+    { role: "system", kind: "authorization", sender: "Safety Agent", time: mockTime(), text: `安全否决：规划路线进入 C 区漏水影响范围。湿滑地面和潜在塌陷会降低制动与避碰能力，要求 ${machineId} 停机。`, tags: ["SAFETY VETO", "STOP_MACHINE"] },
+    { role: "system", kind: "chat", sender: "Maintenance Agent", time: mockTime(), text: "维修判断：灌溉管线必须先隔离并现场检查；在 MAINTENANCE CLEARANCE 产生前，不允许设备进入影响范围。", tags: ["INSPECTION REQUIRED", "CLEARANCE PENDING"] },
+    { role: "system", kind: "authorization", sender: "Supervisor", time: mockTime(), text: `最终裁决：HOLD_FOR_INSPECTION。Supervisor 拥有发布权，但规则要求 ${decision.winningRule}；因此采纳 Safety 停机否决，并等待 Maintenance 放行。`, tags: ["FINAL AUTHORITY", "HOLD_FOR_INSPECTION", "RULE APPLIED"] }
+  );
+  addDynamicEvidence("AGENT CONFLICT ARBITRATED", "movement_authority_policy", `${machineId} ${machine.zone} → ${targetZone} · ${decision.winningRule}`);
+  if (machine.status !== "HOLDING") {
+    machine.status = "HOLDING";
+    runtime.worldVersion += 1;
+    addDynamicEvidence("STOP COMMAND VERIFIED", "simple_executor/mock_isaac_adapter", `${machineId} held at COURSE(${formatCoordinate(machine.x)},${formatCoordinate(machine.y)}) · kernel sync W${runtime.worldVersion}`);
+  }
+  render();
+  return true;
+}
+
+function pathIntersectsHazard(points, hazard) {
+  if (!hazard.active || points.length < 2) return false;
+  const center = { x: hazard.x, y: hazard.y };
+  return points.slice(0, -1).some((start, index) => pointSegmentDistance(center, start, points[index + 1]) <= hazard.radius);
+}
+
+function clearMaintenanceHazard() {
+  const hazard = runtime.hazards.irrigation_leak_c;
+  if (!hazard.discovered) return rejectInstruction("当前没有已发现的 C 区灌溉故障，无法签发维修放行。");
+  if (!hazard.active) {
+    runtime.messages.push({ role: "system", kind: "chat", sender: "Maintenance Agent", time: mockTime(), text: "C 区灌溉故障已经解除，当前放行状态为 MAINTENANCE_VERIFIED。", tags: ["CLEARANCE NO-OP", `WORLD v${runtime.worldVersion}`] });
+    render();
+    return true;
+  }
+
+  const resumedMachines = Object.entries(runtime.devices)
+    .filter(([, device]) => device.type === "MOWER" && device.status === "HOLDING" && device.zone !== hazard.zone)
+    .map(([deviceId, device]) => {
+      device.status = "MOWING";
+      return deviceId;
+    });
+  Object.assign(hazard, {
+    active: false,
+    clearance: "MAINTENANCE_VERIFIED",
+    clearedAt: mockTime()
+  });
+  runtime.worldVersion += 1;
+  runtime.messages.push(
+    { role: "system", kind: "chat", sender: "Maintenance Agent", time: mockTime(), text: "维修确认已验证：C 区阀门已修复，压力测试通过，漏水影响范围已关闭。", tags: ["REPAIR VERIFIED", "MAINTENANCE CLEARANCE"] },
+    { role: "system", kind: "chat", sender: "Safety Agent", time: mockTime(), text: "已读取 Maintenance 放行证据，解除 C 区设备进入否决。人员避让和路线净空规则继续有效。", tags: ["SAFETY VETO RELEASED", "ROUTE CHECK REQUIRED"] },
+    { role: "system", kind: "authorization", sender: "Supervisor", time: mockTime(), text: `C 区重新开放。${resumedMachines.length ? `${resumedMachines.join("、")} 恢复原安全区域任务；` : ""}此前被拒绝的跨区指令不会自动重放，需要重新下达。`, tags: ["ZONE C REOPENED", "CLEARANCE PUBLISHED", `WORLD v${runtime.worldVersion}`] }
+  );
+  addDynamicEvidence("MAINTENANCE CLEARANCE VERIFIED", "maintenance_agent/pressure_test", `irrigation_leak_c repaired · C-zone reopened · kernel sync W${runtime.worldVersion}`);
+  render();
+  return true;
+}
+
+function extractMachineId(text) {
+  const normalized = text.toLowerCase();
+  const match = normalized.match(/(?:割草机|mower[_\s-]*)([12])/);
+  return match ? `mower_${match[1]}` : null;
+}
+
+function clearEmergency() {
+  if (runtime.mode !== "EMERGENCY" || !runtime.incidentActive) return rejectInstruction("当前没有需要解除的紧急警报。");
+  window.clearInterval(runtime.timer);
+  runtime.deviceTimers.forEach((timer) => window.clearTimeout(timer));
+  runtime.deviceTimers = [];
+  runtime.timer = null;
+  runtime.mode = "RECOVERY";
+  runtime.orgVersion += 1;
+  runtime.messages.push({ role: "system", kind: "authorization", sender: "Recovery Policy", time: "14:22:15", text: `解除警报已验证。ModeManager 执行 EMERGENCY → RECOVERY，org v${runtime.orgVersion}。`, tags: ["ALL CLEAR VERIFIED", "RECOVERY"] });
+
+  runtime.devices = clone(scenario.initialDevices);
+  runtime.worldVersion += 1;
+  runtime.cursor = scenario.initialCursor;
+  runtime.mode = "NORMAL";
+  runtime.orgVersion += 1;
+  runtime.incidentActive = false;
+  runtime.authorized = false;
+  runtime.deferred = false;
+  addDynamicEvidence("DAILY OPERATIONS RESUMED", "recovery_policy/mode_manager", `NORMAL org v${runtime.orgVersion} · equipment tasks resumed · kernel sync W${runtime.worldVersion}`, "14:22:16.000");
+  runtime.messages.push({ role: "system", kind: "event", sender: "Golf Runtime Agent", time: "14:22:16", text: `警报解除，组织已恢复 NORMAL / org v${runtime.orgVersion}。割草机恢复日常任务，无人机恢复例行巡检，当前无活动事故。`, tags: ["NORMAL RESTORED", "DAILY OPS RESUMED", `WORLD v${runtime.worldVersion}`] });
+  render();
+  return true;
+}
+
+function addDynamicEvidence(result, source, detail, clock = currentStep().clock) {
+  runtime.dynamicEvidence.push({
+    clock,
+    evidence: { source, result, detail }
+  });
+}
+
+function runPreAuthorizationAssessment() {
+  window.clearInterval(runtime.timer);
+  const assessmentSteps = ["risk", "recommend", scenario.approvalStepId];
+  let assessmentCursor = 0;
   runtime.timer = window.setInterval(() => {
-    if (runtime.cursor >= scenario.steps.length - 1) {
-      stopPlayback();
+    if (assessmentCursor >= assessmentSteps.length) {
+      window.clearInterval(runtime.timer);
+      runtime.timer = null;
       return;
     }
-    goToStep(runtime.cursor + 1);
-  }, 1050);
+    moveToStep(assessmentSteps[assessmentCursor]);
+    assessmentCursor += 1;
+  }, 720);
 }
 
-function stopPlayback() {
+function redirectInspection(text) {
+  const stormIndex = scenario.steps.findIndex((item) => item.id === "storm_event");
+  if (runtime.cursor >= stormIndex) return rejectInstruction("紧急事件期间无人机由 Safety Agent 调度，不能执行日常巡检重定向。");
+  const target = extractInspectionTarget(text);
+  if (!target) return rejectInstruction("请在巡检指令中指定区域，例如“前往 B 区巡检”。");
+  const drone = runtime.devices.drone_1;
+  const targetZone = `FAIRWAY ${target}`;
+  if (drone.zone === targetZone && drone.status === "INSPECTING") {
+    runtime.messages.push({ role: "system", kind: "chat", sender: "Golf Runtime Agent", time: mockTime(), text: `drone_1 已在 ${targetZone} 执行巡检，无需重复下发。`, tags: ["COMMAND NO-OP", `WORLD v${runtime.worldVersion}`] });
+    render();
+    return true;
+  }
+  const coordinates = { A: [18, 38], B: [34, 50], C: [56, 39], D: [69, 68] };
+  const [x, y] = coordinates[target] || [50, 50];
+  return moveDeviceSafely("drone_1", { x, y }, {
+    minimumClearance: 10,
+    movingStatus: "TRANSITING",
+    movingZone: "AIR CORRIDOR",
+    finalStatus: "INSPECTING",
+    finalZone: targetZone,
+    acceptedResult: "INSPECTION REDIRECT ACCEPTED",
+    arrivalResult: "COMMAND VERIFIED",
+    acceptedText: `drone_1 已接受 ${targetZone} 巡检任务，正在沿人员避让航线飞往目标区域。`,
+    arrivalText: `drone_1 已到达 ${targetZone} 并开始巡检。`
+  });
+}
+
+function moveDeviceSafely(deviceId, requestedTarget, options) {
+  const device = runtime.devices[deviceId];
+  const plan = planSafeRoute(deviceId, requestedTarget, options.minimumClearance);
+  if (!plan.safe) {
+    addDynamicEvidence("ROUTE REJECTED", "route_safety_policy", `${deviceId} · ${plan.reason} · clearance ${plan.minimumClearance.toFixed(1)} < ${options.minimumClearance}`);
+    return rejectInstruction(`${deviceId} 的移动指令已拒绝：当前路线无法与人员保持 ${options.minimumClearance} 个单位的安全距离。`);
+  }
+
+  runtime.activeRoutes[deviceId] = { ...plan, status: "ACTIVE" };
+  const routeType = plan.direct ? "DIRECT" : "DETOUR";
+  const adjustment = plan.targetAdjusted ? ` · target adjusted to COURSE(${formatCoordinate(plan.resolvedTarget.x)},${formatCoordinate(plan.resolvedTarget.y)})` : "";
+  addDynamicEvidence("ROUTE SAFETY VERIFIED", "route_safety_policy", `${deviceId} · ${routeType} · clearance ${plan.minimumClearance.toFixed(1)} >= ${options.minimumClearance}${adjustment}`);
+  runtime.messages.push({
+    role: "system",
+    kind: "event",
+    sender: "Route Safety Policy",
+    time: mockTime(),
+    text: routeSafetyMessage(deviceId, plan, options.minimumClearance),
+    tags: ["ROUTE VERIFIED", routeType, `CLEARANCE ${options.minimumClearance}`]
+  });
+
+  Object.assign(device, { status: options.movingStatus, zone: options.movingZone });
+  runtime.worldVersion += 1;
+  addDynamicEvidence(options.acceptedResult, "operations/simple_executor", `${deviceId} command accepted after route verification · kernel sync W${runtime.worldVersion}`);
+  runtime.messages.push({ role: "system", kind: "event", sender: "Operations Agent", time: mockTime(), text: options.acceptedText, tags: ["TASK ASSIGNED", "SAFE ROUTE", `WORLD v${runtime.worldVersion}`] });
+  render();
+
+  return executeRoute(deviceId, plan, options);
+}
+
+function executeRoute(deviceId, plan, options) {
+  const generation = runtime.generation;
+  const device = runtime.devices[deviceId];
+  let waypointIndex = 0;
+  return new Promise((resolve) => {
+    const moveNext = () => {
+      if (generation !== runtime.generation) {
+        resolve(false);
+        return;
+      }
+      const waypoint = plan.waypoints[waypointIndex];
+      if (!waypoint) {
+        Object.assign(device, { status: options.finalStatus, zone: options.finalZone });
+        runtime.activeRoutes[deviceId].status = "COMPLETED";
+        runtime.worldVersion += 1;
+        addDynamicEvidence(options.arrivalResult, "equipment_position_sensor", `${deviceId} arrived ${options.finalZone} COURSE(${formatCoordinate(device.x)},${formatCoordinate(device.y)}) · kernel sync W${runtime.worldVersion}`);
+        runtime.messages.push({ role: "system", kind: "event", sender: "Operations Agent", time: mockTime(), text: `${options.arrivalText} 坐标 COURSE(${formatCoordinate(device.x)},${formatCoordinate(device.y)})。`, tags: ["ARRIVAL VERIFIED", options.finalStatus, `WORLD v${runtime.worldVersion}`] });
+        render();
+        resolve(true);
+        return;
+      }
+
+      const liveClearance = segmentClearance({ x: device.x, y: device.y }, waypoint, peopleObstacles());
+      if (liveClearance + 0.001 < options.minimumClearance) {
+        device.status = "HOLDING";
+        runtime.activeRoutes[deviceId].status = "BLOCKED";
+        runtime.worldVersion += 1;
+        addDynamicEvidence("ROUTE RECHECK FAILED", "route_safety_policy", `${deviceId} held before leg ${waypointIndex + 1} · live clearance ${liveClearance.toFixed(1)}`);
+        runtime.messages.push({ role: "system", kind: "authorization", sender: "Route Safety Policy", time: mockTime(), text: `${deviceId} 移动已暂停：第 ${waypointIndex + 1} 段复核发现人员距离不足，设备保持 HOLDING。`, tags: ["MOVEMENT BLOCKED", "PERSON CLEARANCE", `WORLD v${runtime.worldVersion}`] });
+        render();
+        resolve(false);
+        return;
+      }
+
+      const timer = window.setTimeout(() => {
+        Object.assign(device, { x: roundCoordinate(waypoint.x), y: roundCoordinate(waypoint.y) });
+        runtime.worldVersion += 1;
+        addDynamicEvidence("ROUTE LEG VERIFIED", "mock_isaac_position_sensor", `${deviceId} leg ${waypointIndex + 1}/${plan.waypoints.length} reached COURSE(${formatCoordinate(device.x)},${formatCoordinate(device.y)}) · kernel sync W${runtime.worldVersion}`);
+        waypointIndex += 1;
+        render();
+        moveNext();
+      }, 850);
+      runtime.deviceTimers.push(timer);
+    };
+    moveNext();
+  });
+}
+
+function planSafeRoute(deviceId, requestedTarget, minimumClearance) {
+  const device = runtime.devices[deviceId];
+  const start = { x: Number(device.x), y: Number(device.y) };
+  const people = peopleObstacles();
+  const resolvedTarget = adjustTargetForPeople(requestedTarget, people, minimumClearance + 2);
+  const targetAdjusted = pointDistance(requestedTarget, resolvedTarget) > 0.001;
+  const directClearance = pathClearance([start, resolvedTarget], people);
+  if (directClearance >= minimumClearance) {
+    return { safe: true, direct: true, targetAdjusted, start, requestedTarget, resolvedTarget, waypoints: [resolvedTarget], minimumClearance: directClearance, reason: "DIRECT_ROUTE_CLEAR" };
+  }
+
+  const dx = resolvedTarget.x - start.x;
+  const dy = resolvedTarget.y - start.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const normal = { x: -dy / length, y: dx / length };
+  const diagonal = Math.SQRT1_2;
+  const directions = [
+    normal, { x: -normal.x, y: -normal.y },
+    { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 },
+    { x: diagonal, y: diagonal }, { x: diagonal, y: -diagonal },
+    { x: -diagonal, y: diagonal }, { x: -diagonal, y: -diagonal }
+  ];
+  const candidates = people.flatMap((person) => directions.map((direction) => ({
+    x: clampCoordinate(person.x + direction.x * (minimumClearance + 6)),
+    y: clampCoordinate(person.y + direction.y * (minimumClearance + 6))
+  })));
+  const ranked = candidates.map((waypoint) => ({ waypoint, clearance: pathClearance([start, waypoint, resolvedTarget], people) })).sort((left, right) => right.clearance - left.clearance);
+  if (ranked.length && ranked[0].clearance >= minimumClearance) {
+    return { safe: true, direct: false, targetAdjusted, start, requestedTarget, resolvedTarget, waypoints: [ranked[0].waypoint, resolvedTarget], minimumClearance: ranked[0].clearance, reason: "DETOUR_REQUIRED_FOR_PERSON_CLEARANCE" };
+  }
+  return { safe: false, direct: false, targetAdjusted, start, requestedTarget, resolvedTarget, waypoints: [], minimumClearance: ranked.length ? ranked[0].clearance : directClearance, reason: "NO_ROUTE_MEETS_PERSON_CLEARANCE" };
+}
+
+function adjustTargetForPeople(requestedTarget, people, requiredClearance) {
+  return people.reduce((target, person) => {
+    let dx = target.x - person.x;
+    let dy = target.y - person.y;
+    let distance = Math.hypot(dx, dy);
+    if (distance >= requiredClearance) return target;
+    if (distance === 0) { dx = 1; dy = 0; distance = 1; }
+    return {
+      x: clampCoordinate(person.x + (dx / distance) * requiredClearance),
+      y: clampCoordinate(person.y + (dy / distance) * requiredClearance)
+    };
+  }, { x: requestedTarget.x, y: requestedTarget.y });
+}
+
+function routeSafetyMessage(deviceId, plan, minimumClearance) {
+  const personIds = peopleObstacles().map((person) => person.id).join("、") || "无人员目标";
+  const route = plan.direct
+    ? "直达路线安全"
+    : `直线路径过于接近人员，已加入绕行点 COURSE(${formatCoordinate(plan.waypoints[0].x)},${formatCoordinate(plan.waypoints[0].y)})`;
+  const target = plan.targetAdjusted ? `；原终点离人员过近，安全终点调整为 COURSE(${formatCoordinate(plan.resolvedTarget.x)},${formatCoordinate(plan.resolvedTarget.y)})` : "";
+  return `${deviceId} 路线审查通过：${route}；已检查 ${personIds}，规划最近距离 ${plan.minimumClearance.toFixed(1)}，要求至少 ${minimumClearance}${target}。`;
+}
+
+function peopleObstacles() {
+  return Object.entries(runtime.devices)
+    .filter(([, device]) => device.type === "PERSON")
+    .map(([id, device]) => ({ id, x: Number(device.x), y: Number(device.y) }));
+}
+
+function pathClearance(points, people) {
+  if (!people.length) return 100;
+  let clearance = 100;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    clearance = Math.min(clearance, segmentClearance(points[index], points[index + 1], people));
+  }
+  return clearance;
+}
+
+function segmentClearance(start, end, people) {
+  if (!people.length) return 100;
+  return Math.min(...people.map((person) => pointSegmentDistance(person, start, end)));
+}
+
+function pointSegmentDistance(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const denominator = dx * dx + dy * dy;
+  if (denominator === 0) return pointDistance(point, start);
+  const ratio = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / denominator));
+  return Math.hypot(point.x - (start.x + ratio * dx), point.y - (start.y + ratio * dy));
+}
+
+function pointDistance(left, right) { return Math.hypot(left.x - right.x, left.y - right.y); }
+function clampCoordinate(value) { return Math.max(2, Math.min(98, value)); }
+function roundCoordinate(value) { return Math.round(value * 10) / 10; }
+function formatCoordinate(value) { return Number.isInteger(value) ? String(value) : value.toFixed(1); }
+
+function extractInspectionTarget(text) {
+  const normalized = text.toUpperCase();
+  const namedZones = Array.from(normalized.matchAll(/(?:ZONE|FAIRWAY|球道)\s*([A-H])/g));
+  const chineseZones = Array.from(normalized.matchAll(/([A-H])\s*(?:区|區)/g));
+  const matches = [...namedZones, ...chineseZones].sort((left, right) => left.index - right.index);
+  return matches.length ? matches[matches.length - 1][1] : null;
+}
+
+function prepareEmergencyAuthorization() {
+  const stormIndex = scenario.steps.findIndex((item) => item.id === "storm_event");
+  const approvalIndex = scenario.steps.findIndex((item) => item.id === scenario.approvalStepId);
+  if (runtime.cursor < stormIndex) {
+    rejectInstruction("当前没有活动紧急事件，不能进入紧急模式。");
+    return true;
+  }
+  if (runtime.cursor >= approvalIndex) return false;
+  ["risk", "recommend", scenario.approvalStepId].forEach((stepId) => {
+    const stepIndex = scenario.steps.findIndex((item) => item.id === stepId);
+    if (runtime.cursor < stepIndex) moveToStep(stepId);
+  });
+  approveEmergency(false);
+  return true;
+}
+
+function moveToStep(stepId) {
+  const targetIndex = scenario.steps.findIndex((item) => item.id === stepId);
+  if (targetIndex < 0) return;
+  runtime.cursor = targetIndex;
+  const step = currentStep();
+  runtime.mode = step.mode;
+  runtime.orgVersion = Math.max(runtime.orgVersion, step.orgVersion);
+  runtime.worldVersion = Math.max(runtime.worldVersion, step.worldVersion);
+  if (step.statePatch) Object.entries(step.statePatch).forEach(([id, patch]) => Object.assign(runtime.devices[id], patch));
+  synchronizeHazards(step.id);
+  runtime.messages.push({ role: "system", kind: step.id === "storm_event" ? "event" : "chat", sender: "Golf Runtime Agent", time: step.clock.slice(0, 8), text: step.chat || `${step.title}。`, tags: [...(step.chatTags || []), "INSTRUCTION APPLIED"] });
+  render();
+}
+
+function rejectInstruction(message) {
+  runtime.messages.push({ role: "system", kind: "chat", sender: "Golf Runtime Agent", time: mockTime(), text: message, tags: ["INSTRUCTION REJECTED"] });
+  render();
+  return true;
+}
+
+function handleMockWorkerMessage(text) {
+  const inferredIntent = inferMockIntent(text);
+  if (inferredIntent !== "ANSWER") {
+    return applyRuntimeIntent(text, inferredIntent);
+  }
+  const normalized = text.toLowerCase();
+  if (containsAny(normalized, ["当前状态", "现在情况", "发生了什么", "现场情况"])) {
+    queueAgentReply(runtimeStatusReply(), [runtime.mode, `WORLD v${runtime.worldVersion}`, `ORG v${runtime.orgVersion}`]);
+    return;
+  }
+  if (containsAny(normalized, ["人员", "球员", "人在哪里", "撤离"])) {
+    const person = runtime.devices.player_1;
+    const safetyContext = runtime.authorized ? `无人机状态为 ${runtime.devices.drone_1.status}。` : runtime.incidentActive ? "雷暴到达前需要完成撤离。" : "当前没有人员安全告警。";
+    queueAgentReply(`player_1 当前位于 ${person.zone}，坐标 COURSE(${person.x},${person.y})，状态为 ${person.status}。${safetyContext}`, ["PERSON SAFETY", person.status]);
+    return;
+  }
+  if (containsAny(normalized, ["设备", "割草机", "无人机", "机器"])) {
+    queueAgentReply(deviceStatusReply(), ["ISAAC MOCK", `WORLD v${runtime.worldVersion}`]);
+    return;
+  }
+  if (containsAny(normalized, ["为什么", "原因", "风险", "雷暴"])) {
+    queueAgentReply("风险由三项证据共同触发：雷电距离 6.8 km、预计 8 分钟到达、Fairway B 存在人员和运行设备。建议使用最小紧急组织减少指挥链路。", ["EVIDENCE BASED", "RISK CRITICAL"]);
+    return;
+  }
+  if (containsAny(normalized, ["组织", "agent", "proposal"])) {
+    queueAgentReply(runtime.authorized
+      ? "当前 EMERGENCY 组织由 Incident Commander 负责，Safety、Operations、Communication 保持激活；Proposal 已绑定最新 world/org 版本。"
+      : `当前为 ${runtime.mode} / org v${runtime.orgVersion}，日常组织由 Supervisor 负责。`, ["ORGANIZATION", `ORG v${runtime.orgVersion}`]);
+    return;
+  }
+  queueAgentReply("收到。我可以查询当前状态、人员位置、设备状态、风险原因和 Agent 组织，也可以在你明确授权后进入紧急模式。", ["RUNTIME ASSISTANT"]);
+}
+
+function approveEmergency(recordOperator = true) {
+  if (runtime.authorized) return;
+  if (currentStep().id !== scenario.approvalStepId) {
+    runtime.messages.push({ role: "system", kind: "chat", sender: "Golf Runtime Agent", time: mockTime(), text: "当前没有待授权的组织切换。日常巡检和事件评估仍在进行。", tags: ["NO PENDING AUTH"] });
+    render();
+    return;
+  }
+  runtime.authorized = true;
+  runtime.deferred = false;
+  if (recordOperator) addOperatorDecision("确认进入紧急模式。", "HUMAN APPROVED");
+  runtime.messages.push({
+    role: "system",
+    kind: "authorization",
+    sender: "Golf Runtime Agent",
+    time: "14:22:09",
+    text: "授权身份 course_operator_01 已验证。EmergencyModeAuthorizationPolicy 正在写入授权审计，成功后才允许 ModeManager 切换组织。",
+    tags: ["HUMAN AUTHORITY VERIFIED", "POLICY AUDIT", "ORG TRANSITION PENDING"]
+  });
+  runRemainingSteps();
+}
+
+function deferEmergency(recordOperator = true) {
+  if (runtime.authorized || runtime.deferred) return;
+  if (currentStep().id !== scenario.approvalStepId) {
+    runtime.messages.push({ role: "system", kind: "chat", sender: "Golf Runtime Agent", time: mockTime(), text: "当前没有待处理的组织切换请求。", tags: ["NO PENDING AUTH"] });
+    render();
+    return;
+  }
+  runtime.deferred = true;
+  if (recordOperator) addOperatorDecision("暂不切换，保持 NORMAL 并持续监测。", "DEFERRED");
+  runtime.messages.push({
+    role: "system",
+    kind: "authorization",
+    sender: "Golf Runtime Agent",
+    time: "14:22:09",
+    text: "已保留 NORMAL 组织。系统不会下发设备动作；风险监测继续运行。你仍可在聊天中输入“确认进入紧急模式”改变决定。",
+    tags: ["NO STATE MUTATION", "WATCHING"]
+  });
+  render();
+}
+
+function addOperatorDecision(text, tag) {
+  runtime.messages.push({ role: "operator", kind: "decision", sender: "工作人员", time: mockTime(), text, tags: [tag] });
+}
+
+function queueAgentReply(text, tags) {
+  setTyping(true);
+  window.clearTimeout(runtime.replyTimer);
+  runtime.replyTimer = window.setTimeout(() => {
+    runtime.typing = false;
+    runtime.messages.push({ role: "system", kind: "chat", sender: "Golf Runtime Agent", time: mockTime(), text, tags: [...tags, "MOCK FALLBACK"] });
+    render();
+  }, 460);
+}
+
+function setTyping(value) {
+  runtime.typing = value;
+  renderConversation();
+}
+
+function runRemainingSteps() {
   window.clearInterval(runtime.timer);
+  advanceStep();
+  runtime.timer = window.setInterval(() => {
+    if (runtime.cursor >= scenario.steps.length - 1) {
+      window.clearInterval(runtime.timer);
+      runtime.timer = null;
+      runtime.messages.push({
+        role: "system",
+        kind: "event",
+        sender: "Golf Runtime Agent",
+        time: "14:22:13",
+        text: "紧急处置闭环已完成：人员到达避险点，两台割草机位置已确认。所有目标已到达指定位置，停止周期位置复核，等待解除警报。",
+        tags: ["SAFETY CLOSED LOOP", "POSITION MONITOR STOPPED", "WORLD v19"]
+      });
+      render();
+      return;
+    }
+    advanceStep();
+  }, 920);
+}
+
+function advanceStep() {
+  runtime.cursor = Math.min(runtime.cursor + 1, scenario.steps.length - 1);
+  const step = currentStep();
+  runtime.mode = step.mode;
+  runtime.orgVersion = Math.max(runtime.orgVersion, step.orgVersion);
+  runtime.worldVersion = Math.max(runtime.worldVersion, step.worldVersion);
+  if (step.statePatch) Object.entries(step.statePatch).forEach(([id, patch]) => Object.assign(runtime.devices[id], patch));
+  synchronizeHazards(step.id);
+  if (step.chat) runtime.messages.push({ role: "system", kind: step.id === "storm_event" ? "event" : "chat", sender: "Golf Runtime Agent", time: step.clock.slice(0, 8), text: step.chat, tags: step.chatTags || [] });
+  render();
+}
+
+function resetDemo() {
+  window.clearInterval(runtime.timer);
+  window.clearTimeout(runtime.replyTimer);
+  runtime.deviceTimers.forEach((timer) => window.clearTimeout(timer));
   runtime.timer = null;
-  $("playButton").textContent = "Play Scenario";
-}
-
-function resetScenario() {
-  stopPlayback();
-  runtime.cursor = -1;
-  runtime.selectedSequence = null;
+  runtime.replyTimer = null;
+  runtime.deviceTimers = [];
+  runtime.generation += 1;
+  runtime.commandQueue = Promise.resolve();
+  runtime.cursor = scenario.initialCursor;
+  runtime.authorized = false;
+  runtime.deferred = false;
+  runtime.typing = false;
+  runtime.mode = scenario.steps[scenario.initialCursor].mode;
+  runtime.orgVersion = scenario.steps[scenario.initialCursor].orgVersion;
+  runtime.incidentActive = false;
+  runtime.worldVersion = scenario.steps[scenario.initialCursor].worldVersion;
+  runtime.dynamicEvidence = [];
+  runtime.activeRoutes = {};
+  runtime.messages = clone(initialMessages);
+  runtime.devices = clone(scenario.initialDevices);
+  runtime.hazards = clone(scenario.initialHazards);
+  $("chatInput").value = "";
   render();
-}
-
-function goToStep(index) {
-  runtime.cursor = Math.max(-1, Math.min(index, scenario.steps.length - 1));
-  runtime.selectedSequence = runtime.cursor >= 0 ? scenario.steps[runtime.cursor].sequence : null;
-  render();
-  scrollCurrentMessageIntoView();
-}
-
-function selectMessage(sequence) {
-  runtime.selectedSequence = sequence;
-  renderTimeline();
-  renderMessageDetail();
 }
 
 function render() {
-  renderHeader();
-  renderProgress();
-  renderOrganization();
-  renderChangePanel();
-  renderTimeline();
-  renderMessageDetail();
-  renderPhysicalState();
-  $("previousButton").disabled = runtime.cursor < 0;
-  $("nextButton").disabled = runtime.cursor >= scenario.steps.length - 1;
-}
-
-function renderHeader() {
   const step = currentStep();
-  $("headerMode").textContent = step ? step.mode : scenario.initial.mode;
-  $("headerWorld").textContent = `v${step ? step.worldVersion : scenario.initial.worldVersion}`;
-  $("headerOrg").textContent = `v${step ? step.orgVersion : scenario.initial.orgVersion}`;
-  $("headerPhase").textContent = step ? step.phase : scenario.initial.phase;
-  $("headerMode").className = step && step.mode === "EMERGENCY" ? "emergency-text" : "";
+  $("incidentMetric").textContent = runtime.incidentActive ? scenario.emergencyIncidentId : scenario.incidentId;
+  $("modeMetric").textContent = runtime.mode;
+  $("modeMetric").style.color = runtime.mode === "EMERGENCY" ? "var(--danger)" : "var(--text)";
+  $("worldMetric").textContent = `v${runtime.worldVersion}`;
+  $("orgMetric").textContent = `v${runtime.orgVersion}`;
+  $("simClock").textContent = step.clock;
+  $("stormDistance").textContent = `LIGHTNING ${step.lightningKm.toFixed(1)} KM`;
+  $("telemetryVersion").textContent = `WORLD v${runtime.worldVersion}`;
+  const awaitingApproval = step.id === scenario.approvalStepId && !runtime.authorized && !runtime.deferred;
+  $("conversationState").textContent = runtime.authorized ? (runtime.cursor === scenario.steps.length - 1 ? "等待解除警报" : "响应执行中") : runtime.deferred ? "持续监测" : awaitingApproval ? "等待授权" : "等待指令";
+  $("conversationState").className = `status-tag ${runtime.authorized ? "active" : awaitingApproval ? "waiting" : ""}`;
+  updateLiveNotice();
+  renderConversation();
+  renderCourseMap();
+  renderTelemetry();
+  renderEvidence();
 }
 
-function renderProgress() {
-  const completed = runtime.cursor + 1;
-  const percent = Math.round((completed / scenario.steps.length) * 100);
-  $("stepCounter").textContent = completed === 0 ? "BASELINE" : `STEP ${completed} / ${scenario.steps.length}`;
-  $("progressPercent").textContent = `${percent}%`;
-  $("progressBar").style.width = `${percent}%`;
+function updateLiveNotice() {
+  const step = currentStep();
+  const maintenanceHazard = runtime.hazards.irrigation_leak_c;
+  $("noticeTime").textContent = step.clock.slice(0, 8);
+  $("noticeLabel").textContent = runtime.incidentActive ? "LIVE INCIDENT" : maintenanceHazard.active ? "LIVE MAINTENANCE ALERT" : "LIVE OPERATIONS";
+  const routineNotice = maintenanceHazard.active
+    ? "C 区灌溉阀漏水 · 等待 Maintenance 放行"
+    : maintenanceHazard.discovered
+      ? "C 区维修已验证 · 区域警报解除"
+      : step.id === "daily" ? "日常任务正常 · 无活动事故" : step.id === "inspection" ? `无人机正在 ${runtime.devices.drone_1.zone} 巡检` : step.id === "daily_proposal" ? "维修任务已排队 · 日常作业继续" : "强雷暴预计 8 分钟后到达 · 1 人暴露";
+  $("liveNotice").textContent = runtime.authorized
+    ? runtime.cursor === scenario.steps.length - 1 ? "人员与设备已到位 · 等待解除警报" : `紧急响应执行中 · ${step.label}`
+    : runtime.deferred ? "组织切换已暂缓 · 风险监测持续运行" : routineNotice;
 }
 
-function renderOrganization() {
-  const emergency = isEmergency();
-  const organization = emergency ? scenario.organization.emergency : scenario.organization.normal;
-  const mobile = window.innerWidth <= 720;
-  const positions = emergency
-    ? (mobile ? emergencyMobilePositions : emergencyPositions)
-    : (mobile ? normalMobilePositions : normalPositions);
-  const activeRoles = new Set(organization.roles);
-  const allRoles = emergency ? Object.keys(emergencyPositions) : organization.roles;
-  const transmitting = transmittingRoles();
-
-  $("fromMode").textContent = "NORMAL";
-  $("toMode").textContent = emergency ? "EMERGENCY" : "NORMAL";
-  $("orgCaption").textContent = emergency ? "EMERGENCY Minimum Organization · org_version 2" : "NORMAL Organization · org_version 1";
-  $("communicationIndicator").textContent = transmitting.label;
-
-  $("agentNodes").innerHTML = allRoles.map((role) => {
-    const status = agentStatus(role, emergency, activeRoles);
-    const position = positions[role];
-    const classes = [
-      "agent-node",
-      role === organization.leader ? "leader" : "",
-      status,
-      transmitting.roles.has(role) ? "communicating" : ""
-    ].filter(Boolean).join(" ");
-    return `<div class="${classes}" data-role="${role}" style="left:${position[0]}%;top:${position[1]}%">
-      <span class="node-icon">${roleInitials[role]}</span>
-      <span class="node-copy"><strong>${roleLabels[role]}</strong><span>${role === organization.leader ? "LEADER" : status.toUpperCase()}</span></span>
-    </div>`;
-  }).join("");
-
-  window.requestAnimationFrame(drawReportingLines);
+function renderConversation() {
+  const messages = runtime.messages.map((message) => `
+    <div class="message ${message.role} ${message.kind || ""}">
+      <div class="message-meta"><span>${escapeHtml(message.sender)}</span><time>${message.time}</time></div>
+      <div class="message-body">${escapeHtml(message.text)}
+        ${message.tags.length ? `<div class="message-tags">${message.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
+      </div>
+    </div>`).join("");
+  const authorization = currentStep().id === scenario.approvalStepId && !runtime.authorized && !runtime.deferred ? `
+    <div class="message system authorization-message">
+      <div class="message-meta"><span>Golf Runtime Agent</span><time>需要回复</time></div>
+      <div class="message-body">是否授权进入紧急模式？
+        <div class="authorization-card"><strong>Policy 控制的组织切换授权</strong><p>EmergencyModeAuthorizationPolicy 将记录人工身份和决定；审计成功后才允许 ModeManager 激活 Incident Commander。</p>
+          <div class="authorization-actions"><button id="approveButton" class="primary" type="button">进入紧急模式</button><button id="deferButton" type="button">暂不切换</button></div>
+        </div>
+      </div>
+    </div>` : "";
+  const typing = runtime.typing ? `<div class="message system typing"><div class="message-meta"><span>Golf Runtime Agent</span><time>正在输入</time></div><div class="message-body">正在读取 Runtime 状态</div></div>` : "";
+  $("conversation").innerHTML = messages + authorization + typing;
+  $("approveButton")?.addEventListener("click", () => approveEmergency(true));
+  $("deferButton")?.addEventListener("click", () => deferEmergency(true));
+  $("conversation").scrollTop = $("conversation").scrollHeight;
 }
 
-function drawReportingLines() {
-  const svg = $("reportingLines");
-  const network = $("orgNetwork");
-  const canvas = $("agentNodes");
-  if (!svg || !network || !canvas) return;
-  const emergency = isEmergency();
-  const organization = emergency ? scenario.organization.emergency : scenario.organization.normal;
-  const canvasRect = canvas.getBoundingClientRect();
-  const current = currentStep();
-  svg.setAttribute("viewBox", `0 0 ${canvasRect.width} ${canvasRect.height}`);
-  svg.innerHTML = organization.reports.map(([leader, child]) => {
-    const from = network.querySelector(`[data-role="${leader}"]`);
-    const to = network.querySelector(`[data-role="${child}"]`);
-    if (!from || !to) return "";
-    const fromRect = from.getBoundingClientRect();
-    const toRect = to.getBoundingClientRect();
-    const x1 = fromRect.left + fromRect.width / 2 - canvasRect.left;
-    const y1 = fromRect.bottom - canvasRect.top;
-    const x2 = toRect.left + toRect.width / 2 - canvasRect.left;
-    const y2 = toRect.top - canvasRect.top;
-    const midY = y1 + (y2 - y1) * .48;
-    const active = current && isAgentPair(current.sender, current.recipient, leader, child);
-    return `<path class="reporting-line ${active ? "active-route" : ""}" d="M ${x1} ${y1} V ${midY} H ${x2} V ${y2}"></path>`;
-  }).join("");
-}
+function renderCourseMap() {
+  const routePlans = Object.entries(runtime.activeRoutes);
+  const maximumClearance = routePlans.reduce((value, [deviceId]) => Math.max(value, deviceId.startsWith("drone") ? 10 : 8), 8);
+  const courseMap = $("courseMap");
+  if (!courseMap.dataset.initialized) {
+    courseMap.innerHTML = '<div class="storm-front" hidden></div><div class="fairway a"></div><div class="fairway b"></div><div class="fairway c"></div><div class="maintenance-base">MAINTENANCE</div><svg class="route-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="设备安全路线"></svg><div class="hazard-layer"></div><div class="device-layer"></div><div class="sim-watermark">ISAAC SIGNALS: MOCK INPUT</div>';
+    courseMap.dataset.initialized = "true";
+  }
+  courseMap.querySelector(".storm-front").hidden = !runtime.incidentActive;
+  courseMap.querySelector(".route-overlay").innerHTML = `
+    ${peopleObstacles().map((person) => `<circle class="person-clearance" cx="${person.x}" cy="${person.y}" r="${maximumClearance}"></circle>`).join("")}
+    ${routePlans.map(([deviceId, plan]) => `<polyline class="planned-route ${plan.status.toLowerCase()} ${plan.direct ? "direct" : "detour"}" points="${[plan.start, ...plan.waypoints].map((point) => `${point.x},${point.y}`).join(" ")}"></polyline>`).join("")}`;
+  courseMap.querySelector(".hazard-layer").innerHTML = Object.entries(runtime.hazards).filter(([, hazard]) => hazard.discovered).map(([id, hazard]) => `<div class="map-hazard ${hazard.active ? "active" : "cleared"}" style="left:${hazard.x}%;top:${hazard.y}%"><span>${hazard.active ? "LEAK" : "REPAIRED"}</span><b>${escapeHtml(id)}<br>${escapeHtml(hazard.clearance)}</b></div>`).join("");
 
-function renderChangePanel() {
-  const selectorReached = hasReached("ORGANIZATION_PLAN");
-  const emergency = isEmergency();
-  const config = scenario.organization.emergency;
-  $("changeTitle").textContent = selectorReached ? "Minimum emergency organization selected" : "Normal operations organization";
-  $("triggerValue").textContent = selectorReached ? config.trigger : "No active incident";
-  $("reasonValue").textContent = selectorReached ? config.reason : "Routine golf course operations use functional departments under Supervisor.";
-  $("capabilityValue").textContent = selectorReached ? config.capabilities.join(", ") : "supervision, safety, operations, maintenance, resource, communication";
-  $("selectedValue").textContent = selectorReached ? config.selectedRoles.map(labelRole).join(", ") : scenario.organization.normal.roles.map(labelRole).join(", ");
-  $("activatedRoles").textContent = selectorReached ? config.activated.map(labelRole).join(", ") : "None";
-  $("retainedRoles").textContent = selectorReached ? config.retained.map(labelRole).join(", ") : "All normal roles";
-  $("suspendedRoles").textContent = selectorReached ? config.suspended.map(labelRole).join(", ") : "None";
-
-  const rejection = scenario.proposalRejection;
-  const compared = hasReached("PROPOSAL_SUBMISSION");
-  const rejected = hasReached("STALE_PROPOSAL_REJECTED");
-  $("proposalWorld").textContent = rejection.proposalWorldVersion;
-  $("proposalOrg").textContent = rejection.proposalOrgVersion;
-  $("runtimeWorld").textContent = rejection.runtimeWorldVersion;
-  $("runtimeOrg").textContent = rejection.runtimeOrgVersion;
-  $("gateResult").textContent = rejected ? rejection.result : compared ? "COMPARING" : "WAITING";
-  $("gateReason").textContent = rejected ? `${rejection.code} · ${rejection.reason}` : compared ? "ProposalBoard is comparing both version dimensions." : "The old NORMAL proposal will be checked after organization transition.";
-  $("proposalGate").classList.toggle("rejected", rejected);
-  if (emergency && !rejected) $("gateResult").textContent = "READY";
-}
-
-function renderTimeline() {
-  $("messageTimeline").innerHTML = scenario.steps.map((step, index) => {
-    const statusClass = step.status === "REJECTED" ? "rejected" : step.status === "ACCEPTED" ? "accepted" : "";
-    const classes = [
-      "message-row",
-      index > runtime.cursor ? "future" : "",
-      index === runtime.cursor ? "current" : "",
-      statusClass
-    ].filter(Boolean).join(" ");
-    return `<li class="${classes}">
-      <button type="button" data-message-sequence="${step.sequence}">
-        <span class="message-seq">${String(step.sequence).padStart(2, "0")}</span>
-        <span class="message-route"><span class="route-main"><strong>${escapeHtml(step.sender)}</strong><i>→</i><strong>${escapeHtml(step.recipient)}</strong></span><small>${escapeHtml(step.summary)}</small></span>
-        <span class="message-type">${escapeHtml(step.type)}</span>
-      </button>
-    </li>`;
-  }).join("");
-
-  document.querySelectorAll("[data-message-sequence]").forEach((button) => {
-    button.addEventListener("click", () => selectMessage(Number(button.dataset.messageSequence)));
+  const deviceLayer = courseMap.querySelector(".device-layer");
+  const activeDeviceIds = new Set(Object.keys(runtime.devices));
+  Array.from(deviceLayer.children).forEach((element) => {
+    if (!activeDeviceIds.has(element.dataset.deviceId)) element.remove();
+  });
+  Object.entries(runtime.devices).forEach(([id, device]) => {
+    const isPerson = device.type === "PERSON";
+    const tracking = device.status.includes("TRACKING");
+    let element = Array.from(deviceLayer.children).find((candidate) => candidate.dataset.deviceId === id);
+    const isNew = !element;
+    if (isNew) {
+      element = document.createElement("div");
+      element.dataset.deviceId = id;
+      deviceLayer.appendChild(element);
+    }
+    element.className = `map-object ${isPerson ? "person" : ""} ${tracking ? "tracking" : ""}`;
+    element.innerHTML = `${isPerson ? "P1" : id.startsWith("drone") ? "D1" : id.endsWith("1") ? "M1" : "M2"}<span class="object-label">${escapeHtml(id)} / ${escapeHtml(device.status)}<br>POS ${device.x},${device.y}</span>`;
+    const updatePosition = () => {
+      element.style.left = `${device.x}%`;
+      element.style.top = `${device.y}%`;
+    };
+    if (isNew) updatePosition(); else window.requestAnimationFrame(updatePosition);
   });
 }
 
-function renderMessageDetail() {
-  const step = scenario.steps.find((item) => item.sequence === runtime.selectedSequence);
-  if (!step) {
-    $("detailStatus").textContent = "BASELINE";
-    $("messageDetail").innerHTML = `<div class="empty-detail">播放场景或选择一条消息查看结构化内容。<br><br>所有消息均绑定 world_version 与 org_version。</div>`;
-    return;
-  }
-  const rejected = step.status === "REJECTED" || step.type === "PROPOSAL_REJECTED";
-  $("detailStatus").textContent = step.status || (step.sequence <= runtime.cursor + 1 ? "DELIVERED" : "TRACE PREVIEW");
-  $("messageDetail").innerHTML = `
-    <div class="detail-route"><div class="detail-agent">${escapeHtml(step.sender)}</div><i>→</i><div class="detail-agent">${escapeHtml(step.recipient)}</div></div>
-    <span class="detail-type">${escapeHtml(step.type)}</span>
-    <p class="detail-summary">${escapeHtml(step.summary)}</p>
-    <div class="detail-versions"><div><span>WORLD_VERSION</span><strong>v${step.worldVersion}</strong></div><div><span>ORG_VERSION</span><strong>v${step.orgVersion}</strong></div></div>
-    <div class="payload-box"><span>PAYLOAD SUMMARY</span>${payloadRows(step.payload)}</div>
-    <div class="result-box ${rejected ? "rejected" : ""}"><span>RESULT / REASON</span><p>${escapeHtml(step.result)}</p></div>`;
-}
-
-function renderPhysicalState() {
-  const currentState = stateAtCursor();
-  const deviceCards = Object.entries(scenario.initial.devices).map(([id, initial]) => {
-    const current = currentState.devices[id];
-    return `<article class="device-card">
-      <header><strong>${id}</strong><span>${initial.type}</span></header>
-      <div class="device-delta"><span>${initial.status}</span><i>→</i><span class="current">${current.status}</span></div>
-      <div class="device-delta"><span>${initial.zone}</span><i>→</i><span class="current">${current.zone}</span></div>
-      <div class="battery-track"><i style="width:${current.battery}%"></i></div>
-    </article>`;
-  }).join("");
-  const personCards = Object.entries(scenario.initial.people || {}).map(([id, initial]) => {
-    const current = currentState.people[id];
-    return `<article class="device-card person-card">
-      <header><strong>${id}</strong><span>${escapeHtml(initial.role.toUpperCase())}</span></header>
-      <div class="device-delta"><span>${escapeHtml(initial.status)}</span><i>→</i><span class="current">${escapeHtml(current.status)}</span></div>
-      <div class="device-delta"><span>${escapeHtml(initial.zone)}</span><i>→</i><span class="current">${escapeHtml(current.zone)}</span></div>
-    </article>`;
-  }).join("");
-  $("deviceStateGrid").innerHTML = `${deviceCards}${personCards}
-    <article class="runtime-state-card"><span>NEW_TASKS_FROZEN</span><strong>${String(currentState.newTasksFrozen).toUpperCase()}</strong></article>
-    <article class="runtime-state-card"><span>CURRENT MODE</span><strong>${currentState.mode}</strong></article>
-    <article class="runtime-state-card"><span>CURRENT ORG_VERSION</span><strong>v${currentState.orgVersion}</strong></article>`;
-}
-
-function stateAtCursor() {
-  const state = {
-    mode: scenario.initial.mode,
-    orgVersion: scenario.initial.orgVersion,
-    newTasksFrozen: scenario.initial.newTasksFrozen,
-    devices: JSON.parse(JSON.stringify(scenario.initial.devices)),
-    people: JSON.parse(JSON.stringify(scenario.initial.people || {}))
-  };
-  scenario.steps.slice(0, runtime.cursor + 1).forEach((step) => {
-    state.mode = step.mode;
-    state.orgVersion = step.orgVersion;
-    if (!step.statePatch) return;
-    if (typeof step.statePatch.newTasksFrozen === "boolean") state.newTasksFrozen = step.statePatch.newTasksFrozen;
-    Object.entries(step.statePatch.devices || {}).forEach(([id, patch]) => Object.assign(state.devices[id], patch));
-    Object.entries(step.statePatch.people || {}).forEach(([id, patch]) => Object.assign(state.people[id], patch));
+function synchronizeHazards(stepId) {
+  if (stepId !== "inspection" && stepId !== "daily_proposal") return;
+  Object.assign(runtime.hazards.irrigation_leak_c, {
+    active: true,
+    discovered: true,
+    clearance: "PENDING_MAINTENANCE_INSPECTION"
   });
-  return state;
 }
 
-function transmittingRoles() {
+function renderTelemetry() {
+  $("deviceTelemetry").innerHTML = Object.entries(runtime.devices).map(([id, device]) => `<div class="device-row"><div><strong>${escapeHtml(id)}</strong><span>${escapeHtml(device.type)} · ${escapeHtml(device.zone)}<br>COURSE POS ${device.x},${device.y}</span>${device.battery === null ? "" : `<div class="battery"><i style="width:${device.battery}%"></i></div>`}</div><span class="device-status">${escapeHtml(device.status)}</span></div>`).join("");
+}
+
+function renderEvidence() {
+  const records = [...scenario.steps.slice(0, runtime.cursor + 1), ...runtime.dynamicEvidence]
+    .sort((left, right) => left.clock.localeCompare(right.clock));
+  $("evidenceCount").textContent = `${records.length} RECORDS`;
+  $("evidenceStream").innerHTML = records.slice().reverse().map((step) => `<li class="evidence-item"><time>${step.clock.slice(0, 8)}</time><div><strong>${escapeHtml(step.evidence.result)}</strong><span>${escapeHtml(step.evidence.source)}<br>${escapeHtml(step.evidence.detail)}</span></div></li>`).join("");
+}
+
+function runtimeStatusReply() {
   const step = currentStep();
-  if (!step) return { roles: new Set(), label: "No active transmission" };
-  const roles = new Set([normalizeRole(step.sender), normalizeRole(step.recipient)].filter((role) => roleLabels[role]));
-  return { roles, label: `${step.sender} → ${step.recipient}` };
+  if (runtime.authorized) return `当前为 ${runtime.mode}，world v${runtime.worldVersion}，org v${runtime.orgVersion}。${runtime.cursor === scenario.steps.length - 1 ? "人员和设备均已到达指定安全位置，等待解除警报。" : `正在处理：${step.label}。`}`;
+  if (step.id === scenario.approvalStepId) return `当前为 NORMAL，world v${runtime.worldVersion}，org v${runtime.orgVersion}。雷暴风险为 CRITICAL，ModeManager 正在等待 Policy 人工授权。`;
+  return `当前为 ${runtime.mode}，world v${runtime.worldVersion}，org v${runtime.orgVersion}。${runtime.incidentActive ? "雷暴事件正在评估中。" : "日常任务正在运行。"}`;
 }
 
-function agentStatus(role, emergency, activeRoles) {
-  if (!emergency) return "retained";
-  if (!activeRoles.has(role)) return "suspended";
-  if (scenario.organization.emergency.activated.includes(role)) return "activated";
-  return "retained";
+function deviceStatusReply() {
+  return Object.entries(runtime.devices).map(([id, device]) => `${id}: ${device.status} / ${device.zone} / COURSE(${device.x},${device.y})`).join("；") + "。以上数据来自 Mock Isaac telemetry。";
 }
 
-function isAgentPair(sender, recipient, roleA, roleB) {
-  const normalized = [normalizeRole(sender), normalizeRole(recipient)];
-  return normalized.includes(roleA) && normalized.includes(roleB);
+function containsAny(text, candidates) { return candidates.some((candidate) => text.includes(candidate)); }
+function isMaintenanceClearanceCommand(text) {
+  const compact = text.toLowerCase().replaceAll(" ", "").replaceAll("區", "区").replaceAll("檢", "检").replaceAll("復", "复").replaceAll("維", "维");
+  const zoneC = containsAny(compact, ["c区", "c球道", "zonec", "fairwayc"]);
+  const completed = containsAny(compact, ["修好", "已修复", "已经修复", "修复完", "修复完成", "修复完毕", "修完", "维修完", "处理完", "检修完", "已经正常", "恢复正常", "故障解除", "故障已解除", "故障已经解除", "已解除故障", "问题解决", "漏水解决", "repaired", "fixed", "repaircomplete", "cleared"]);
+  return zoneC && completed;
 }
+function mockTime() { return currentStep().clock.slice(0, 8); }
+function currentStep() { return scenario.steps[runtime.cursor]; }
+function clone(value) { return JSON.parse(JSON.stringify(value)); }
+function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[character])); }
 
-function normalizeRole(value) {
-  return String(value).replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase();
-}
-
-function labelRole(role) { return roleLabels[role] || role; }
-function currentStep() { return runtime.cursor >= 0 ? scenario.steps[runtime.cursor] : null; }
-function isEmergency() { return Boolean(currentStep() && currentStep().mode === "EMERGENCY"); }
-function hasReached(type) { return scenario.steps.slice(0, runtime.cursor + 1).some((step) => step.type === type); }
-
-function payloadRows(payload) {
-  return Object.entries(payload).map(([key, value]) => `<div class="payload-row"><code>${escapeHtml(key)}</code><strong>${escapeHtml(formatValue(value))}</strong></div>`).join("");
-}
-
-function formatValue(value) {
-  if (Array.isArray(value)) return value.join(", ");
-  if (value && typeof value === "object") return JSON.stringify(value);
-  return String(value);
-}
-
-function scrollCurrentMessageIntoView() {
-  const row = document.querySelector(".message-row.current");
-  if (row) row.scrollIntoView({ block: "nearest", behavior: "smooth" });
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>'"]/g, (character) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
-  }[character]));
-}
-
-async function loadRuntimeTrace() {
-  try {
-    const response = await fetch("./runtime_trace.jsonl", { cache: "no-store" });
-    if (!response.ok) throw new Error(`trace request failed: ${response.status}`);
-    const records = (await response.text()).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
-    const metadata = records.find((record) => record.record_type === "scenario");
-    const events = records.filter((record) => record.record_type === "event").map((record) => record.event);
-    if (!metadata || events.length === 0) throw new Error("trace is incomplete");
-    scenario = { ...metadata.scenario, steps: events };
-    traceSource = `RUNTIME_TRACE_JSONL_V${metadata.schema_version}`;
-  } catch (error) {
-    console.warn("Using bundled scenario fallback", error);
-  }
-}
-
-loadRuntimeTrace().then(init);
+init();
