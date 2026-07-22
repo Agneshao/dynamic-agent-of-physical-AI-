@@ -8,6 +8,8 @@
 
 `golf-runtime-core` is a Python runtime for coordinating AI agents, humans, and physical equipment in a changing environment. The current demonstration uses a golf course thunderstorm, autonomous mowers, a patrol drone, and people on the course.
 
+The core runtime, agent organization, safety policies, execution chain, dashboard, and simulation control services run on **NVIDIA DGX Spark**. The project also includes a golf-course **NVIDIA Isaac Sim** platform for visualizing dynamic people, drones, mowers, weather, and regional hazards.
+
 Our core innovation is:
 
 > **Build the smallest agent organization that covers the capabilities required by an incident, reducing coordination latency without removing safety checks and helping operators respond faster.**
@@ -23,6 +25,15 @@ Software can save logs and rerun tests. The physical world cannot be paused.
 - Every proposal, command, transition, and physical observation must remain auditable.
 
 dynamic agent addresses these problems with versioned world state, dynamic agent organizations, deterministic safety policies, evidence-backed execution, and append-only auditing.
+
+## NVIDIA DGX Spark and Isaac Sim
+
+- **DGX Spark is the runtime and compute foundation**, hosting Runtime Core, multi-agent orchestration, policies, execution, model calls, and the operations dashboard.
+- **Isaac Sim is the physical-world simulation platform**, with golf-course zones, a maintenance area, people, drones, autonomous mowers, and thunderstorm events.
+- **Adapters define the connection boundary**: observations from Isaac Sim or the Mock Simulator pass through verification and evidence collection before entering `WorldStateKernel`.
+- **Mock signals provide reproducible tests**: the repository demo runs offline without Isaac Sim while preserving the same state and execution contracts.
+
+Even on DGX Spark and Isaac Sim, agents cannot directly mutate equipment or world state. Every action must pass through version checks, policies, `SimpleExecutor`, and `WorldStateKernel`.
 
 ## Demo scenario
 
@@ -98,7 +109,7 @@ flowchart TB
     BOARD[ProposalBoard<br/>admission + lifecycle]
     APPROVAL[Human Approval]
     EXECUTOR[SimpleExecutor<br/>version + idempotency + verification]
-    ADAPTER[Mock / ROS2 Equipment Adapter]
+    ADAPTER[Isaac Sim / Mock / ROS2 Adapter]
     LEDGER[AuditLedger<br/>append-only JSONL]
 
     SENSOR --> KERNEL
@@ -182,6 +193,8 @@ SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY
 
 ## Technology
 
+- NVIDIA DGX Spark runtime and compute platform
+- NVIDIA Isaac Sim golf-course simulation platform
 - Python 3.9
 - Pydantic frozen schemas
 - StepFun `step-3.7-flash` model adapter
@@ -195,7 +208,7 @@ SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY
 
 ```text
 runtime_core/
-├── adapters/       # Mock, StepFun, and ROS2 boundaries
+├── adapters/       # Isaac Sim, Mock, StepFun, and ROS2 boundaries
 ├── agents/         # Agent harness, roles, and structured handlers
 ├── audit/          # Append-only audit ledger
 ├── coordination/   # Proposal admission and lifecycle
@@ -236,7 +249,7 @@ python3 -m runtime_core.ui.server --port 8765
 
 Open [http://127.0.0.1:8765](http://127.0.0.1:8765).
 
-The dashboard starts with mock physical signals. It supports normal patrol, maintenance hazards, route-safe machine movement, thunderstorm authorization, emergency organization transition, continuously verified positions, and recovery to normal operation.
+The dashboard and runtime run on DGX Spark. The repository defaults to mock physical signals so the demo remains reproducible without an Isaac Sim process. When connected to the prepared Isaac Sim golf-course platform, the simulation provides people, equipment, weather, and hazard signals. The system supports normal patrol, maintenance hazards, route-safe movement, thunderstorm authorization, emergency organization transition, continuously verified positions, and recovery to normal operation.
 
 ### Optional StepFun model
 
@@ -257,7 +270,7 @@ The committed runtime baseline contains **178 passing tests** covering state own
 
 ## Current integration boundary
 
-The current physical world is mock-driven. Isaac Sim, live ROS2 nodes, hardware-in-the-loop testing, and distributed recovery are future integrations. They are expected to connect through the existing ports and must not bypass the runtime's ownership, policy, version, or evidence boundaries.
+The DGX Spark runtime environment and Isaac Sim golf-course platform are already set up. The repository's default signal chain remains mock-driven so tests are repeatable and do not require a running simulator. The live Isaac Sim signal bridge, production ROS2 nodes, hardware-in-the-loop testing, and distributed recovery remain engineering follow-ups. They must connect through the existing ports and must not bypass the runtime's ownership, policy, version, or evidence boundaries.
 
 `MinimalOrganizationSelector` recommends the four-role decision team shown above when no logistics constraint exists. The current `ModeManager` emergency profile still keeps `logistics` active as a reserved role; it does not participate in the measured four-role decision chain. Unifying these two configuration sources is a documented next step.
 

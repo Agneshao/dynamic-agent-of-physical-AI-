@@ -8,6 +8,8 @@
 
 `golf-runtime-core` 是一个面向动态物理环境的多 Agent 运行时核心，用于协调 AI Agent、工作人员和物理设备。当前演示场景为高尔夫球场雷暴应急，包含自动割草机、巡检无人机和球场人员。
 
+整套核心 Runtime、Agent 组织编排、安全 Policy、执行链、Dashboard 与仿真控制程序均运行在 **NVIDIA DGX Spark** 上；项目同时已经搭建高尔夫球场 **NVIDIA Isaac Sim** 仿真平台，用于呈现人员、无人机、割草机、天气和区域风险的动态变化。
+
 我们的核心创新是：
 
 > **根据突发事件组建覆盖必要能力的最小 Agent 组织，在不减少安全检查的前提下降低协调延迟，帮助工作人员更快完成应急决策与处置。**
@@ -23,6 +25,15 @@
 - 每个 Proposal、Command、组织转换和物理观测都必须可审计。
 
 dynamic agent 使用版本化世界状态、动态 Agent 组织、确定性安全策略、证据驱动执行和追加式审计解决这些问题。
+
+## NVIDIA DGX Spark 与 Isaac Sim
+
+- **DGX Spark 是运行与计算底座**：承载 Runtime Core、多 Agent 编排、Policy、Executor、模型调用和可视化控制台。
+- **Isaac Sim 是物理世界仿真平台**：已经搭建高尔夫球场区域、维护区、人员、无人机、割草机和雷暴事件场景。
+- **Adapter 是连接边界**：Isaac Sim 或 Mock Simulator 的观测经过 Adapter、验证和 Evidence 链进入 `WorldStateKernel`。
+- **Mock 信号用于可复现测试**：仓库默认 Demo 可在没有 Isaac Sim 的环境中离线运行，但遵循与仿真平台相同的状态和执行契约。
+
+即使运行在 DGX Spark 和 Isaac Sim 上，Agent 仍不能直接修改设备或世界状态；所有动作必须经过版本检查、Policy、`SimpleExecutor` 和 `WorldStateKernel`。
 
 ## 演示场景
 
@@ -98,7 +109,7 @@ flowchart TB
     BOARD[ProposalBoard<br/>准入 + 生命周期]
     APPROVAL[人工授权]
     EXECUTOR[SimpleExecutor<br/>版本 + 幂等 + 验证]
-    ADAPTER[Mock / ROS2 设备 Adapter]
+    ADAPTER[Isaac Sim / Mock / ROS2 Adapter]
     LEDGER[AuditLedger<br/>追加式 JSONL]
 
     SENSOR --> KERNEL
@@ -182,6 +193,8 @@ SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY
 
 ## 技术栈
 
+- NVIDIA DGX Spark 运行与计算平台
+- NVIDIA Isaac Sim 高尔夫球场仿真平台
 - Python 3.9
 - Pydantic Frozen Schema
 - StepFun `step-3.7-flash` 模型 Adapter
@@ -195,7 +208,7 @@ SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY
 
 ```text
 runtime_core/
-├── adapters/       # Mock、StepFun 与 ROS2 边界
+├── adapters/       # Isaac Sim、Mock、StepFun 与 ROS2 边界
 ├── agents/         # Agent Harness、角色和结构化 Handler
 ├── audit/          # 追加式 Audit Ledger
 ├── coordination/   # Proposal 准入与生命周期
@@ -236,7 +249,7 @@ python3 -m runtime_core.ui.server --port 8765
 
 浏览器打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)。
 
-控制台默认使用 Mock 物理信号，支持日常巡检、灌溉故障、人员安全绕行、割草机任务指派、雷暴授权、紧急组织切换、位置持续验证和恢复日常运行。
+控制台与 Runtime 运行在 DGX Spark 上。仓库默认使用 Mock 物理信号，便于在没有 Isaac Sim 的环境中复现；连接已搭建的 Isaac Sim 高尔夫球场平台后，可由仿真场景提供人员、设备、天气和风险信号。系统支持日常巡检、灌溉故障、人员安全绕行、割草机任务指派、雷暴授权、紧急组织切换、位置持续验证和恢复日常运行。
 
 ### 可选 StepFun 模型
 
@@ -257,7 +270,7 @@ python3 -m pytest -q
 
 ## 当前接入边界
 
-当前物理世界使用 Mock 数据驱动。Isaac Sim、真实 ROS2 Node、硬件在环测试和分布式恢复属于后续接入能力。这些能力应通过现有 Port 接入，不能绕过 Runtime 的所有权、Policy、版本和 Evidence 边界。
+项目已经完成 DGX Spark 运行环境和 Isaac Sim 高尔夫球场仿真平台搭建。当前仓库默认信号链仍使用 Mock 数据，以保证测试可重复且不依赖仿真进程；Isaac Sim 实时信号桥、真实 ROS2 Node、硬件在环测试和分布式恢复仍是后续工程化工作。这些能力必须通过现有 Port 接入，不能绕过 Runtime 的所有权、Policy、版本和 Evidence 边界。
 
 `MinimalOrganizationSelector` 在没有物流约束时推荐上图所示的四角色决策组织。当前 `ModeManager` 的紧急模式仍将 `logistics` 保留为活跃预留角色，但它不参与本次测量的四角色决策链。统一这两个配置来源是已经记录的下一步工作。
 
