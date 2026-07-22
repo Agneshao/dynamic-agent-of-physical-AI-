@@ -135,6 +135,7 @@ class IsaacSimulatorAdapter(SimulatorAdapter):
             "observed_plan_version": state.observed_plan_version,
             "pipeline_gate": state.pipeline_gate,
             "new_tasks_frozen": state.new_tasks_frozen,
+            "hazards": state.hazards,
             "entities": entities,
         }
 
@@ -365,11 +366,18 @@ def _expected_machine_status(command_type: CommandType) -> str:
         CommandType.MOVE_TO_ZONE: "mowing",
         CommandType.RECALL_DRONE: "idle",
         CommandType.TRACK_PERSON: "tracking_person",
+        CommandType.INSPECT_ZONE: "inspecting",
     }.get(command_type, "unknown")
 
 
 def _matches_expected(command: Command, receipt: ExecutionReceipt) -> bool:
-    if command.command_type == CommandType.ACTIVATE_THUNDERSTORM:
+    if command.command_type in {
+        CommandType.ACTIVATE_THUNDERSTORM,
+        CommandType.RESET_SCENARIO,
+        CommandType.START_SCENARIO,
+        CommandType.DECLARE_IRRIGATION_LEAK,
+        CommandType.CLEAR_IRRIGATION_LEAK,
+    }:
         return receipt.status == CommandStatus.EXECUTING
     if command.command_type == CommandType.FREEZE_NEW_TASKS:
         return receipt.new_tasks_frozen is True

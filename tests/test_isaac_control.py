@@ -112,6 +112,43 @@ def test_thunderstorm_control_is_runtime_scoped() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "command_type",
+    (
+        "reset_scenario",
+        "start_scenario",
+        "declare_irrigation_leak",
+        "clear_irrigation_leak",
+    ),
+)
+def test_runtime_lifecycle_controls_are_runtime_scoped(command_type) -> None:
+    request = IsaacControlCommandRequest.model_validate(
+        {
+            **make_payload(),
+            "command_type": command_type,
+            "target_id": "runtime",
+            "target_zone": None,
+        }
+    )
+    assert request.target_id == "runtime"
+
+
+def test_inspection_control_requires_drone_and_zone() -> None:
+    payload = {
+        **make_payload(),
+        "command_type": "inspect_zone",
+        "target_id": "drone_1",
+        "target_zone": "B",
+    }
+    request = IsaacControlCommandRequest.model_validate(payload)
+    assert request.target_zone == "ZONE_B"
+
+    with pytest.raises(ValidationError, match="requires drone_1"):
+        IsaacControlCommandRequest.model_validate(
+            {**payload, "target_id": "mower_1"}
+        )
+
+
 def test_http_isaac_state_and_command_endpoints(tmp_path) -> None:
     adapter = FakeLiveIsaacAdapter()
     server = create_server(

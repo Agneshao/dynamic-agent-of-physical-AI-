@@ -52,9 +52,10 @@ class IsaacControlService:
             )
         parameters = ()
         if request.target_zone is not None:
+            speed_mps = 8.0 if request.command_type.value == "inspect_zone" else 4.0
             parameters = (
                 ProposalParameter(name="target_zone", value=request.target_zone),
-                ProposalParameter(name="speed_mps", value=4.0),
+                ProposalParameter(name="speed_mps", value=speed_mps),
             )
         command_incident_id = f"{request.incident_id}:{request.request_id}"
         command = Command(

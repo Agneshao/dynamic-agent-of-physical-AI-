@@ -107,6 +107,13 @@ async function checkIsaacStatus() {
 
 function applyIsaacState(state) {
   runtime.isaacConnected = Boolean(state.configured && state.connected);
+  Object.entries(state.hazards || {}).forEach(([hazardId, observation]) => {
+    const hazard = runtime.hazards[hazardId];
+    if (!hazard) return;
+    hazard.active = Boolean(observation.active);
+    hazard.discovered = Boolean(observation.discovered);
+    hazard.clearance = String(observation.clearance || hazard.clearance);
+  });
   Object.entries(state.entities || {}).forEach(([deviceId, observation]) => {
     const device = runtime.devices[deviceId];
     if (!device) return;
@@ -230,13 +237,13 @@ function inferMockIntent(text) {
 
 async function applyRuntimeIntent(text, intent) {
   if (intent === "ANSWER") return false;
+  if (intent === "START_INSPECTION") return startInspection();
   if (intent === "REDIRECT_INSPECTION") return redirectInspection(text);
   if (intent === "RETURN_MACHINE_TO_BASE") return returnMachineToBase(text);
   if (intent === "ASSIGN_MOWING_ZONE") return assignMowingZone(text);
   if (intent === "CLEAR_MAINTENANCE_HAZARD") return clearMaintenanceHazard();
   if (intent === "CLEAR_EMERGENCY") return clearEmergency();
   const transitions = {
-    START_INSPECTION: ["daily", "inspection"],
     CREATE_MAINTENANCE_TASK: ["inspection", "daily_proposal"],
     ASSESS_RISK: ["storm_event", "risk"],
     PREPARE_EMERGENCY_ORGANIZATION: ["risk", "recommend"],
@@ -270,6 +277,20 @@ async function applyRuntimeIntent(text, intent) {
   if (!transition) return false;
   if (currentStep().id !== transition[0]) return rejectInstruction(`当前阶段为“${currentStep().label}”，不能执行该指令。`);
   moveToStep(transition[1]);
+  return true;
+}
+
+async function startInspection() {
+  if (currentStep().id !== "daily") {
+    return rejectInstruction(`当前阶段为“${currentStep().label}”，不能重复开始初始巡检。`);
+  }
+  if (runtime.isaacConfigured) {
+    if (!runtime.isaacConnected) return rejectInstruction("Isaac Bridge 当前未连接，真实巡检未启动。");
+    await executeLiveIsaacCommand("start_scenario", "runtime", null);
+    await executeLiveIsaacCommand("inspect_zone", "drone_1", "ZONE_C");
+    await executeLiveIsaacCommand("declare_irrigation_leak", "runtime", null);
+  }
+  moveToStep("inspection");
   return true;
 }
 
@@ -323,6 +344,9 @@ async function assignMowingZone(text) {
   const authorityDecision = evaluateMowerMovementAuthority(machineId, targetZone, { x, y });
   if (authorityDecision.outcome === "HOLD_FOR_INSPECTION") {
     return applyMovementAuthorityHold(machineId, targetZone, authorityDecision);
+  }
+  if (authorityDecision.requiresArbitration) {
+    applyMovementAuthorityAllow(machineId, targetZone, authorityDecision);
   }
   if (runtime.isaacConfigured) {
     if (!runtime.isaacConnected) return rejectInstruction("Isaac Bridge 当前未连接，真实移动指令未下发。");
@@ -393,6 +417,7 @@ function evaluateMowerMovementAuthority(machineId, targetZone, requestedTarget) 
   const routeAffected = hazard.active && (targetAffected || pathIntersectsHazard(points, hazard));
   return {
     outcome: routeAffected ? "HOLD_FOR_INSPECTION" : "ALLOW",
+    requiresArbitration: hazard.active,
     finalAuthority: "Supervisor",
     winningRule: routeAffected ? "SAFETY_VETO > MAINTENANCE_CLEARANCE > OPERATIONS_CONTINUITY" : "NO_ACTIVE_ROUTE_HAZARD",
     hazard,
@@ -405,18 +430,26 @@ function applyMovementAuthorityHold(machineId, targetZone, decision) {
   const machine = runtime.devices[machineId];
   runtime.messages.push(
     { role: "system", kind: "chat", sender: "Operations Agent", time: mockTime(), text: `提议继续执行：将 ${machineId} 从 ${machine.zone} 调往 ${targetZone}，保持割草进度。`, tags: ["PROPOSAL", "CONTINUE_MOWING"] },
-    { role: "system", kind: "authorization", sender: "Safety Agent", time: mockTime(), text: `安全否决：规划路线进入 C 区漏水影响范围。湿滑地面和潜在塌陷会降低制动与避碰能力，要求 ${machineId} 停机。`, tags: ["SAFETY VETO", "STOP_MACHINE"] },
+    { role: "system", kind: "authorization", sender: "Safety Agent", time: mockTime(), text: `安全否决：新路线进入 C 区漏水影响范围。要求停止本次转区，不中断设备在当前安全区域的原任务。`, tags: ["SAFETY VETO", "REJECT_NEW_ROUTE"] },
     { role: "system", kind: "chat", sender: "Maintenance Agent", time: mockTime(), text: "维修判断：灌溉管线必须先隔离并现场检查；在 MAINTENANCE CLEARANCE 产生前，不允许设备进入影响范围。", tags: ["INSPECTION REQUIRED", "CLEARANCE PENDING"] },
-    { role: "system", kind: "authorization", sender: "Supervisor", time: mockTime(), text: `最终裁决：HOLD_FOR_INSPECTION。Supervisor 拥有发布权，但规则要求 ${decision.winningRule}；因此采纳 Safety 停机否决，并等待 Maintenance 放行。`, tags: ["FINAL AUTHORITY", "HOLD_FOR_INSPECTION", "RULE APPLIED"] }
+    { role: "system", kind: "authorization", sender: "Supervisor", time: mockTime(), text: `最终裁决：REJECT_NEW_ASSIGNMENT_KEEP_CURRENT_TASK。Supervisor 拥有最终发布权，规则要求 ${decision.winningRule}；因此拒绝进入 C 区，${machineId} 继续当前安全任务，等待 Maintenance 放行。`, tags: ["FINAL AUTHORITY", "ASSIGNMENT REJECTED", "CURRENT TASK PRESERVED"] }
   );
   addDynamicEvidence("AGENT CONFLICT ARBITRATED", "movement_authority_policy", `${machineId} ${machine.zone} → ${targetZone} · ${decision.winningRule}`);
-  if (machine.status !== "HOLDING") {
-    machine.status = "HOLDING";
-    runtime.worldVersion += 1;
-    addDynamicEvidence("STOP COMMAND VERIFIED", "simple_executor/mock_isaac_adapter", `${machineId} held at COURSE(${formatCoordinate(machine.x)},${formatCoordinate(machine.y)}) · kernel sync W${runtime.worldVersion}`);
-  }
+  addDynamicEvidence("CURRENT TASK PRESERVED", runtime.isaacConnected ? "isaac_simulator_adapter" : "mock_isaac_adapter", `${machineId} remains ${machine.status} in ${machine.zone}; rejected command was not dispatched`);
   render();
   return true;
+}
+
+function applyMovementAuthorityAllow(machineId, targetZone, decision) {
+  const machine = runtime.devices[machineId];
+  runtime.messages.push(
+    { role: "system", kind: "chat", sender: "Operations Agent", time: mockTime(), text: `运营建议：将 ${machineId} 从 ${machine.zone} 调往 ${targetZone}，继续割草任务。`, tags: ["PROPOSAL", "OPERATIONS CONTINUITY"] },
+    { role: "system", kind: "authorization", sender: "Safety Agent", time: mockTime(), text: "安全审查：C 区仍为限制区，但该目标和审查路线未进入漏水影响范围，可附带路线约束放行。", tags: ["SAFETY REVIEW", "ROUTE CONSTRAINED"] },
+    { role: "system", kind: "chat", sender: "Maintenance Agent", time: mockTime(), text: "维修判断：C 区继续等待现场检查；不反对设备在其他安全区域作业。", tags: ["C ZONE RESTRICTED", "INSPECTION PENDING"] },
+    { role: "system", kind: "authorization", sender: "Supervisor", time: mockTime(), text: `最终裁决：ALLOW_WITH_ROUTE_CONSTRAINTS。Supervisor 依据 ${decision.winningRule} 批准本次转区，同时保持 C 区禁入。`, tags: ["FINAL AUTHORITY", "APPROVED", "RULE APPLIED"] }
+  );
+  addDynamicEvidence("AGENT CONFLICT ARBITRATED", "movement_authority_policy", `${machineId} ${machine.zone} → ${targetZone} · ALLOW_WITH_ROUTE_CONSTRAINTS`);
+  render();
 }
 
 function pathIntersectsHazard(points, hazard) {
@@ -425,13 +458,18 @@ function pathIntersectsHazard(points, hazard) {
   return points.slice(0, -1).some((start, index) => pointSegmentDistance(center, start, points[index + 1]) <= hazard.radius);
 }
 
-function clearMaintenanceHazard() {
+async function clearMaintenanceHazard() {
   const hazard = runtime.hazards.irrigation_leak_c;
   if (!hazard.discovered) return rejectInstruction("当前没有已发现的 C 区灌溉故障，无法签发维修放行。");
   if (!hazard.active) {
     runtime.messages.push({ role: "system", kind: "chat", sender: "Maintenance Agent", time: mockTime(), text: "C 区灌溉故障已经解除，当前放行状态为 MAINTENANCE_VERIFIED。", tags: ["CLEARANCE NO-OP", `WORLD v${runtime.worldVersion}`] });
     render();
     return true;
+  }
+
+  if (runtime.isaacConfigured) {
+    if (!runtime.isaacConnected) return rejectInstruction("Isaac Bridge 当前未连接，C 区维修放行未同步。");
+    await executeLiveIsaacCommand("clear_irrigation_leak", "runtime", null);
   }
 
   const resumedMachines = Object.entries(runtime.devices)
@@ -458,7 +496,7 @@ function clearMaintenanceHazard() {
 
 function extractMachineId(text) {
   const normalized = text.toLowerCase();
-  const match = normalized.match(/(?:割草机|mower[_\s-]*)([12])/) || normalized.match(/(?:^|[^a-z0-9])m0?([12])(?=$|[^a-z0-9])/);
+  const match = normalized.match(/(?:割草机|除草机|mower[_\s-]*)([12])/) || normalized.match(/(?:^|[^a-z0-9])m0?([12])(?=$|[^a-z0-9])/);
   return match ? `mower_${match[1]}` : null;
 }
 
@@ -508,7 +546,7 @@ function runPreAuthorizationAssessment() {
   }, 720);
 }
 
-function redirectInspection(text) {
+async function redirectInspection(text) {
   const stormIndex = scenario.steps.findIndex((item) => item.id === "storm_event");
   if (runtime.cursor >= stormIndex) return rejectInstruction("紧急事件期间无人机由 Safety Agent 调度，不能执行日常巡检重定向。");
   const target = extractInspectionTarget(text);
@@ -519,6 +557,10 @@ function redirectInspection(text) {
     runtime.messages.push({ role: "system", kind: "chat", sender: "Golf Runtime Agent", time: mockTime(), text: `drone_1 已在 ${targetZone} 执行巡检，无需重复下发。`, tags: ["COMMAND NO-OP", `WORLD v${runtime.worldVersion}`] });
     render();
     return true;
+  }
+  if (runtime.isaacConfigured) {
+    if (!runtime.isaacConnected) return rejectInstruction("Isaac Bridge 当前未连接，真实巡检转区指令未下发。");
+    return executeLiveIsaacCommand("inspect_zone", "drone_1", `ZONE_${target}`);
   }
   const coordinates = { A: [18, 38], B: [34, 50], C: [56, 39], D: [69, 68] };
   const [x, y] = coordinates[target] || [50, 50];
@@ -735,7 +777,7 @@ function moveToStep(stepId) {
   runtime.mode = step.mode;
   runtime.orgVersion = Math.max(runtime.orgVersion, step.orgVersion);
   runtime.worldVersion = Math.max(runtime.worldVersion, step.worldVersion);
-  if (step.statePatch) Object.entries(step.statePatch).forEach(([id, patch]) => Object.assign(runtime.devices[id], patch));
+  if (step.statePatch && !runtime.isaacConnected) Object.entries(step.statePatch).forEach(([id, patch]) => Object.assign(runtime.devices[id], patch));
   synchronizeHazards(step.id);
   runtime.messages.push({ role: "system", kind: step.id === "storm_event" ? "event" : "chat", sender: "Golf Runtime Agent", time: step.clock.slice(0, 8), text: step.chat || `${step.title}。`, tags: [...(step.chatTags || []), "INSTRUCTION APPLIED"] });
   render();
@@ -841,6 +883,10 @@ function setTyping(value) {
 }
 
 function runRemainingSteps() {
+  if (runtime.isaacConfigured && runtime.isaacConnected) {
+    runLiveEmergencySteps();
+    return;
+  }
   window.clearInterval(runtime.timer);
   advanceStep();
   runtime.timer = window.setInterval(() => {
@@ -862,19 +908,60 @@ function runRemainingSteps() {
   }, 920);
 }
 
+function runLiveEmergencySteps() {
+  window.clearInterval(runtime.timer);
+  runtime.timer = window.setInterval(() => {
+    if (currentStep().id !== "position_recheck") {
+      advanceStep();
+      return;
+    }
+    if (!liveEmergencySafetyClosedLoop()) return;
+    window.clearInterval(runtime.timer);
+    runtime.timer = null;
+    moveToStep("shelter_verified");
+    runtime.messages.push({
+      role: "system",
+      kind: "event",
+      sender: "Golf Runtime Agent",
+      time: mockTime(),
+      text: "Isaac 实时位置已验证：人员到达避险点，两台割草机分别停入休息泊位，无人机完成跟随并转为监视。",
+      tags: ["LIVE SAFETY CLOSED LOOP", "ISAAC POSITIONS VERIFIED", `WORLD v${runtime.worldVersion}`]
+    });
+    render();
+  }, 1000);
+}
+
+function liveEmergencySafetyClosedLoop() {
+  const mower1 = runtime.devices.mower_1?.status || "";
+  const mower2 = runtime.devices.mower_2?.status || "";
+  const drone = runtime.devices.drone_1?.status || "";
+  const player = runtime.devices.player_1?.status || "";
+  return mower1.includes("PARKED_AT_MOWER_BAY_01")
+    && mower2.includes("PARKED_AT_MOWER_BAY_02")
+    && drone.includes("OVERWATCH_AT_")
+    && player.includes("SHELTERED_AT_");
+}
+
 function advanceStep() {
   runtime.cursor = Math.min(runtime.cursor + 1, scenario.steps.length - 1);
   const step = currentStep();
   runtime.mode = step.mode;
   runtime.orgVersion = Math.max(runtime.orgVersion, step.orgVersion);
   runtime.worldVersion = Math.max(runtime.worldVersion, step.worldVersion);
-  if (step.statePatch) Object.entries(step.statePatch).forEach(([id, patch]) => Object.assign(runtime.devices[id], patch));
+  if (step.statePatch && !runtime.isaacConnected) Object.entries(step.statePatch).forEach(([id, patch]) => Object.assign(runtime.devices[id], patch));
   synchronizeHazards(step.id);
   if (step.chat) runtime.messages.push({ role: "system", kind: step.id === "storm_event" ? "event" : "chat", sender: "Golf Runtime Agent", time: step.clock.slice(0, 8), text: step.chat, tags: step.chatTags || [] });
   render();
 }
 
-function resetDemo() {
+async function resetDemo() {
+  if (runtime.isaacConfigured && runtime.isaacConnected) {
+    try {
+      await executeLiveIsaacCommand("reset_scenario", "runtime", null);
+    } catch (error) {
+      return rejectInstruction(`Isaac 重置失败：${error.message}`);
+    }
+  }
   window.clearInterval(runtime.timer);
   window.clearTimeout(runtime.replyTimer);
   runtime.deviceTimers.forEach((timer) => window.clearTimeout(timer));
@@ -1027,15 +1114,16 @@ function runtimeStatusReply() {
 }
 
 function deviceStatusReply() {
-  return Object.entries(runtime.devices).map(([id, device]) => `${id}: ${device.status} / ${device.zone} / COURSE(${device.x},${device.y})`).join("；") + "。以上数据来自 Mock Isaac telemetry。";
+  const source = runtime.isaacConnected ? "真实 Isaac Bridge telemetry" : "Mock Isaac telemetry";
+  return Object.entries(runtime.devices).map(([id, device]) => `${id}: ${device.status} / ${device.zone} / COURSE(${device.x},${device.y})`).join("；") + `。以上数据来自${source}。`;
 }
 
 function containsAny(text, candidates) { return candidates.some((candidate) => text.includes(candidate)); }
-function containsMowerReference(text) { return containsAny(text, ["割草机", "mower"]) || /(?:^|[^a-z0-9])m0?[12](?=$|[^a-z0-9])/.test(text); }
+function containsMowerReference(text) { return containsAny(text, ["割草机", "除草机", "mower"]) || /(?:^|[^a-z0-9])m0?[12](?=$|[^a-z0-9])/.test(text); }
 function isMaintenanceClearanceCommand(text) {
   const compact = text.toLowerCase().replaceAll(" ", "").replaceAll("區", "区").replaceAll("檢", "检").replaceAll("復", "复").replaceAll("維", "维");
   const zoneC = containsAny(compact, ["c区", "c球道", "zonec", "fairwayc"]);
-  const completed = containsAny(compact, ["修好", "已修复", "已经修复", "修复完", "修复完成", "修复完毕", "修完", "维修完", "处理完", "检修完", "已经正常", "恢复正常", "故障解除", "故障已解除", "故障已经解除", "已解除故障", "问题解决", "漏水解决", "repaired", "fixed", "repaircomplete", "cleared"]);
+  const completed = containsAny(compact, ["修好", "已修复", "已经修复", "修复完", "修复完成", "修复完毕", "修复好了", "修理好了", "维修好了", "完成修复", "已处理", "处理完成", "已经处理好", "恢复使用", "修完", "维修完", "处理完", "检修完", "已经正常", "恢复正常", "故障解除", "故障已解除", "故障已经解除", "已解除故障", "问题解决", "漏水解决", "repaired", "fixed", "repaircomplete", "cleared"]);
   return zoneC && completed;
 }
 function mockTime() { return currentStep().clock.slice(0, 8); }

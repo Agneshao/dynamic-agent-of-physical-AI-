@@ -27,6 +27,11 @@ class CommandType(str, Enum):
     ALERT_PERSON = "alert_person"
     TRACK_PERSON = "track_person"
     ACTIVATE_THUNDERSTORM = "activate_thunderstorm"
+    RESET_SCENARIO = "reset_scenario"
+    START_SCENARIO = "start_scenario"
+    INSPECT_ZONE = "inspect_zone"
+    DECLARE_IRRIGATION_LEAK = "declare_irrigation_leak"
+    CLEAR_IRRIGATION_LEAK = "clear_irrigation_leak"
 
 
 class CommandStatus(str, Enum):

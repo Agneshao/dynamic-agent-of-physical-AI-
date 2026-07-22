@@ -18,6 +18,11 @@ _CONTROL_COMMANDS = {
     CommandType.MOVE_TO_ZONE,
     CommandType.RECALL_DRONE,
     CommandType.ACTIVATE_THUNDERSTORM,
+    CommandType.RESET_SCENARIO,
+    CommandType.START_SCENARIO,
+    CommandType.INSPECT_ZONE,
+    CommandType.DECLARE_IRRIGATION_LEAK,
+    CommandType.CLEAR_IRRIGATION_LEAK,
 }
 _CONTROL_TARGETS = {"mower_1", "mower_2", "drone_1", "runtime"}
 _MOWING_ZONES = {"ZONE_A", "ZONE_B", "ZONE_C", "ZONE_D"}
@@ -58,16 +63,24 @@ class IsaacControlCommandRequest(BaseModel):
             raise ValueError("command_type is not enabled for the operator UI")
         if self.target_id not in _CONTROL_TARGETS:
             raise ValueError("target_id is not enabled for the operator UI")
-        if self.command_type == CommandType.ACTIVATE_THUNDERSTORM:
+        if self.command_type in {
+            CommandType.ACTIVATE_THUNDERSTORM,
+            CommandType.RESET_SCENARIO,
+            CommandType.START_SCENARIO,
+            CommandType.DECLARE_IRRIGATION_LEAK,
+            CommandType.CLEAR_IRRIGATION_LEAK,
+        }:
             if self.target_id != "runtime":
-                raise ValueError("activate_thunderstorm must target runtime")
-        if self.command_type == CommandType.MOVE_TO_ZONE:
-            if not self.target_id.startswith("mower_"):
+                raise ValueError(f"{self.command_type.value} must target runtime")
+        if self.command_type in {CommandType.MOVE_TO_ZONE, CommandType.INSPECT_ZONE}:
+            if self.command_type == CommandType.MOVE_TO_ZONE and not self.target_id.startswith("mower_"):
                 raise ValueError("move_to_zone currently supports mower targets only")
+            if self.command_type == CommandType.INSPECT_ZONE and self.target_id != "drone_1":
+                raise ValueError("inspect_zone requires drone_1")
             if self.target_zone is None:
-                raise ValueError("move_to_zone requires target_zone")
+                raise ValueError(f"{self.command_type.value} requires target_zone")
         elif self.target_zone is not None:
-            raise ValueError("target_zone is only valid for move_to_zone")
+            raise ValueError("target_zone is only valid for zone movement commands")
         return self
 
 

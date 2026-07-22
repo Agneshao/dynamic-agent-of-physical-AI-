@@ -163,7 +163,7 @@ def _detect_explicit_intent(message: str) -> RuntimeChatIntent:
 
 
 def _has_mower_reference(message: str) -> bool:
-    return any(marker in message for marker in ("割草机", "mower")) or bool(
+    return any(marker in message for marker in ("割草机", "除草机", "mower")) or bool(
         re.search(r"(?<![a-z0-9])m0?[12](?![a-z0-9])", message)
     )
 
@@ -186,6 +186,14 @@ def _is_maintenance_clearance_command(message: str) -> bool:
             "修复完",
             "修复完成",
             "修复完毕",
+            "修复好了",
+            "修理好了",
+            "维修好了",
+            "完成修复",
+            "已处理",
+            "处理完成",
+            "已经处理好",
+            "恢复使用",
             "修完",
             "维修完",
             "处理完",

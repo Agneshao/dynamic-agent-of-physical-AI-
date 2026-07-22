@@ -117,6 +117,7 @@ class IsaacBridgeState(BaseModel):
     pipeline_gate: str = Field(min_length=1)
     last_action_id: Optional[UUID] = None
     new_tasks_frozen: bool = False
+    hazards: dict[str, dict[str, object]] = Field(default_factory=dict)
     entities: tuple[IsaacEntityObservation, ...] = ()
 
     @field_validator("heartbeat_at")
