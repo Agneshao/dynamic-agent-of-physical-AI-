@@ -125,6 +125,41 @@ def test_router_config_allows_only_local_plain_http() -> None:
         StepFunRouterConfig(base_url="http://model.internal:8080/v1")
 
 
+def test_local_router_uses_prompt_schema_without_llama_grammar(monkeypatch) -> None:
+    captured = {}
+
+    def transport(endpoint, payload, api_key, timeout_seconds):
+        del endpoint, api_key, timeout_seconds
+        captured.update(payload)
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": json.dumps(safety_payload())},
+                }
+            ]
+        }
+
+    monkeypatch.setenv("STEP_API_KEY", "local")
+    router = StepFunModelRouter(
+        StepFunRouterConfig(base_url="http://127.0.0.1:8080/v1"),
+        transport=transport,
+    )
+
+    result = router.complete(
+        system_prompt="Return a safety report.",
+        user_prompt="local context",
+        output_schema=SafetyReport,
+        priority=0,
+        timeout_seconds=60,
+    )
+
+    assert isinstance(result, SafetyReport)
+    assert "response_format" not in captured
+    assert captured["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "JSON Schema" in captured["messages"][0]["content"]
+
+
 def test_structured_handler_sends_only_serializable_frozen_inputs() -> None:
     class FakeRouter:
         def complete(self, **kwargs):

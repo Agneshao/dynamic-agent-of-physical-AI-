@@ -94,24 +94,38 @@ class StepFunModelRouter:
                 f"missing API key environment variable: {self.config.api_key_env}"
             )
 
+        schema = output_schema.model_json_schema()
+        local_http = self.config.base_url.startswith(
+            ("http://127.0.0.1", "http://localhost")
+        )
+        effective_system_prompt = system_prompt
+        if local_http:
+            effective_system_prompt += (
+                " Return ONLY one JSON object matching this JSON Schema; do not "
+                "include markdown, reasoning, or extra keys: "
+                + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+            )
         payload: dict[str, object] = {
             "model": self.config.model,
             "messages": [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": effective_system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
             "reasoning_effort": self.config.reasoning_effort,
-            "response_format": {
+        }
+        if local_http:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        else:
+            payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
                     "name": output_schema.__name__,
                     "strict": True,
-                    "schema": output_schema.model_json_schema(),
+                    "schema": schema,
                 },
-            },
-        }
+            }
         endpoint = f"{self.config.base_url.rstrip('/')}/chat/completions"
         response = self._transport(endpoint, payload, api_key, timeout_seconds)
         try:
